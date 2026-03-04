@@ -23,7 +23,7 @@ function seededRandom(seed: number, index: number): number {
   return x - Math.floor(x);
 }
 
-function generateThreatData(ip: string, settlementMs: number) {
+function generateThreatData(ip: string, settlementMs: number, txHash?: string) {
   const seed = hashIP(ip);
 
   const categories = ['scanner', 'scraper', 'proxy', 'tor_exit', 'residential', 'datacenter', 'vpn'];
@@ -66,6 +66,7 @@ function generateThreatData(ip: string, settlementMs: number) {
     request_cost: '$0.0001',
     settlement_network: 'Radius',
     settlement_time_ms: settlementMs,
+    ...(txHash ? { tx_hash: txHash } : {}),
   };
 }
 
@@ -206,7 +207,8 @@ export default {
       }
 
       const settlementMs = Date.now() - t0;
-      const data = generateThreatData(ip, settlementMs);
+      const txHash = settleData.transaction;
+      const data = generateThreatData(ip, settlementMs, txHash);
 
       return Response.json(data, {
         headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
