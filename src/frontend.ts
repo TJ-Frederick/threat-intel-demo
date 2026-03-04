@@ -846,6 +846,15 @@ export function getFrontendHtml(paymentAddress: string): string {
     .swarm-card-header { padding: 16px; }
     .swarm-card-body { padding: 16px; }
 
+    /* Result section header: wrap meta to second line */
+    .result-section-header { flex-wrap: wrap; padding: 12px 16px; }
+    .result-section-header .meta-right {
+      flex-basis: 100%;
+      padding-left: 22px;
+      margin-top: 4px;
+    }
+    .result-section-body { padding: 0 16px 16px; }
+
     /* Activity log: wrap entries into 2 lines */
     .activity-log { padding: 10px 12px; }
     .activity-log .entry {
@@ -853,13 +862,18 @@ export function getFrontendHtml(paymentAddress: string): string {
       gap: 4px 8px;
       padding: 5px 0;
     }
-    .activity-log .entry .msg {
+    .activity-log .entry::before {
+      content: '';
       flex-basis: 100%;
+      height: 0;
+      order: 2;
+    }
+    .activity-log .entry .msg {
+      flex: 1;
       order: 3;
     }
     .activity-log .entry .tx-col {
       order: 4;
-      margin-left: auto;
     }
 
     /* Tighter section spacing */
