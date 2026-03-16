@@ -1094,7 +1094,8 @@ import { createPublicClient, createWalletClient, http, encodeFunctionData, decod
 import { privateKeyToAccount } from 'https://esm.sh/viem/accounts';
 
 const PAYMENT_ADDRESS = '${paymentAddress}';
-const FACILITATOR_ADDRESS = '0xdeE710bB6a3b652C35B5cB74E7bdb03EE1F641E6';
+const FACILITATOR_ADDRESS = '0x36eC8F4BE5667E3A00598162B6c3Fb9387086304';
+const PERMIT_SETTLER_ADDRESS = '0x494C3586A75a5B94e40d9d1780B2B03dbEa37F51';
 const TOKEN_ADDRESS = '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb';
 const RADIUS_RPC = 'https://rpc.radiustech.xyz/cebu04iqsbb2xhuklnlnj68amqfukg8ayl32tuwga9ldsuf2';
 const BATCH_CONTRACT = '0x71e14b65a8305a9a95a675abccb993f929b53885';
@@ -1277,6 +1278,11 @@ window.connectWallet = async function() {
       }
     }
 
+    window.walletClient = createWalletClient({
+      chain: radius,
+      transport: custom(window.ethereum),
+    });
+
     const short = connectedAddress.slice(0, 6) + '...' + connectedAddress.slice(-4);
     document.getElementById('walletAddr').textContent = short;
     document.getElementById('walletInfo').classList.add('visible');
@@ -1340,7 +1346,7 @@ window.runQuery = async function() {
       domain: permitDomain,
       message: {
         owner: connectedAddress,
-        spender: FACILITATOR_ADDRESS,
+        spender: PERMIT_SETTLER_ADDRESS,
         value: req.maxAmountRequired.toString(),
         nonce: nonce.toString(),
         deadline: deadline.toString(),
@@ -1362,7 +1368,7 @@ window.runQuery = async function() {
         signature: signature,
         authorization: {
           from: connectedAddress,
-          to: FACILITATOR_ADDRESS,
+          to: PAYMENT_ADDRESS,
           value: req.maxAmountRequired.toString(),
           validAfter: '0',
           validBefore: deadline.toString(),
@@ -1462,6 +1468,22 @@ const batchTransferCallData = (token, recipients, amounts) => encodeFunctionData
   args: [token, recipients, amounts]
 });
 
+async function estimateGasWithFallback(txParams, fallbackGas) {
+  try {
+    const estimate = await publicClient.estimateGas({
+      account: txParams.from,
+      to: txParams.to,
+      data: txParams.data,
+    });
+    const gas = '0x' + (estimate + estimate / BigInt(5)).toString(16);
+    console.log('Gas estimated:', Number(estimate), '→ with buffer:', gas);
+    return gas;
+  } catch (e) {
+    console.warn('Gas estimation failed, using fallback ' + fallbackGas + ':', e);
+    return '0x' + BigInt(fallbackGas).toString(16);
+  }
+}
+
 window.updateCost = function() {
   const agents = parseInt(document.getElementById('swarmAgents').value) || 1;
   const perAgent = parseInt(document.getElementById('swarmCount').value) || 1;
@@ -1491,41 +1513,61 @@ window.launchSwarm = async function() {
   }
 
   const totalFunding = amountPerAgent * BigInt(numAgents);
-  statusEl.innerHTML = '<span class="spinner"></span>Approving batch funding... Confirm in MetaMask.';
+  statusEl.innerHTML = '<span class="spinner"></span>Checking balances...';
+
+  const ethBalance = await publicClient.getBalance({ address: connectedAddress });
+  const minEthRequired = BigInt(5000000000000000); // 0.005 ETH
+  if (ethBalance < minEthRequired) {
+    statusEl.className = 'status-msg error';
+    statusEl.textContent = 'Insufficient ETH for gas. Need ~0.005 ETH, have ' + (Number(ethBalance) / 1e18).toFixed(4) + ' ETH.';
+    return;
+  }
+
+  statusEl.innerHTML = '<span class="spinner"></span>Estimating gas...';
   try {
-    const approveTxHash = await window.ethereum.request({
-      method: 'eth_sendTransaction',
-      params: [{
-        from: connectedAddress,
-        to: TOKEN_ADDRESS,
-        data: approveData(BATCH_CONTRACT, totalFunding),
-      }]
+    const approveCallData = approveData(BATCH_CONTRACT, totalFunding);
+    const approveGas = await estimateGasWithFallback(
+      { from: connectedAddress, to: TOKEN_ADDRESS, data: approveCallData }, 200000
+    );
+    statusEl.innerHTML = '<span class="spinner"></span>Approving batch funding... Confirm in wallet.';
+    const approveTxHash = await window.walletClient.sendTransaction({
+      account: connectedAddress,
+      to: TOKEN_ADDRESS,
+      data: approveCallData,
+      gas: BigInt(parseInt(approveGas, 16)),
+      chain: radius,
     });
     statusEl.innerHTML = '<span class="spinner"></span>Waiting for approval tx...';
     await waitForTx(approveTxHash);
   } catch (err) {
     statusEl.className = 'status-msg error';
-    statusEl.textContent = 'Approval failed: ' + (err.message || err);
+    statusEl.textContent = 'Approval failed: ' + (err.message || err) + (err.txHash ? ' tx: ' + err.txHash : '');
+    console.error('Approve error:', err);
     return;
   }
 
   const recipients = agents.map(a => a.account.address);
   const amounts = agents.map(() => amountPerAgent);
-  statusEl.innerHTML = '<span class="spinner"></span>Batch funding ' + numAgents + ' agents... Confirm in MetaMask.';
+  statusEl.innerHTML = '<span class="spinner"></span>Estimating gas for batch transfer...';
   try {
-    const batchTxHash = await window.ethereum.request({
-      method: 'eth_sendTransaction',
-      params: [{
-        from: connectedAddress,
-        to: BATCH_CONTRACT,
-        data: batchTransferCallData(TOKEN_ADDRESS, recipients, amounts),
-      }]
+    const batchCallData = batchTransferCallData(TOKEN_ADDRESS, recipients, amounts);
+    const batchGas = await estimateGasWithFallback(
+      { from: connectedAddress, to: BATCH_CONTRACT, data: batchCallData }, 200000 + numAgents * 80000
+    );
+    statusEl.innerHTML = '<span class="spinner"></span>Batch funding ' + numAgents + ' agents... Confirm in wallet.';
+    const batchTxHash = await window.walletClient.sendTransaction({
+      account: connectedAddress,
+      to: BATCH_CONTRACT,
+      data: batchCallData,
+      gas: BigInt(parseInt(batchGas, 16)),
+      chain: radius,
     });
     statusEl.innerHTML = '<span class="spinner"></span>Waiting for batch funding tx...';
     await waitForTx(batchTxHash);
   } catch (err) {
     statusEl.className = 'status-msg error';
     statusEl.textContent = 'Batch funding failed: ' + (err.message || err);
+    console.error('Batch funding error:', err);
     return;
   }
 
@@ -1593,7 +1635,7 @@ window.launchSwarm = async function() {
             primaryType: 'Permit',
             message: {
               owner: account.address,
-              spender: FACILITATOR_ADDRESS,
+              spender: PERMIT_SETTLER_ADDRESS,
               value: BigInt(100),
               nonce: currentNonce,
               deadline: deadline,
@@ -1608,7 +1650,7 @@ window.launchSwarm = async function() {
               signature: signature,
               authorization: {
                 from: account.address,
-                to: FACILITATOR_ADDRESS,
+                to: PAYMENT_ADDRESS,
                 value: '100',
                 validAfter: '0',
                 validBefore: deadline.toString(),
@@ -1678,7 +1720,11 @@ async function waitForTx(txHash) {
   for (let i = 0; i < 60; i++) {
     const receipt = await publicClient.getTransactionReceipt({ hash: txHash }).catch(() => null);
     if (receipt) {
-      if (receipt.status === 'reverted') throw new Error('Transaction reverted');
+      if (receipt.status === 'reverted') {
+        const err = new Error('Transaction reverted (' + txHash.slice(0, 10) + '...)');
+        err.txHash = txHash;
+        throw err;
+      }
       return receipt;
     }
     await new Promise(r => setTimeout(r, 1000));

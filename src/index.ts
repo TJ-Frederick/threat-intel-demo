@@ -6,7 +6,7 @@ interface Env {
 }
 
 const TOKEN_ADDRESS = '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb';
-const FACILITATOR_URL = 'https://x402.stablecoin.xyz';
+const FACILITATOR_URL = 'https://facilitator.andrs.dev';
 const AMOUNT = '100'; // 0.0001 SBC (6 decimals)
 
 // Deterministic hash from IP string
@@ -154,9 +154,25 @@ export default {
         facilitatorHeaders['X-API-Key'] = env.FACILITATOR_API_KEY;
       }
 
+      const auth = paymentPayload?.payload?.authorization || {};
+      const req = paymentRequirements.accepts[0];
       const facilitatorBody = JSON.stringify({
-        paymentPayload,
-        paymentRequirements: paymentRequirements.accepts[0],
+        payload: {
+          scheme: 'eip2612',
+          from: auth.from,
+          to: auth.to,
+          value: auth.value,
+          validAfter: auth.validAfter,
+          validBefore: auth.validBefore,
+          nonce: auth.nonce,
+        },
+        requirements: {
+          tokenAddress: req.asset,
+          amount: req.maxAmountRequired,
+          recipient: req.payTo,
+          network: req.network,
+        },
+        signature: paymentPayload?.payload?.signature,
       });
 
       // Verify
