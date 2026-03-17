@@ -77,11 +77,14 @@ export type PaymentOutcome =
   | {
       status: 'settled';
       txHash: string | undefined;
-      settleResponse: any;
       verifyMs: number;
       settleMs: number;
       totalMs: number;
-      payer: string | undefined;
+    }
+  | {
+      status: 'settle-pending';
+      verifyMs: number;
+      totalMs: number;
     };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -191,7 +194,6 @@ export async function processPayment(
   }
 
   const auth = paymentPayload?.payload?.authorization || {};
-  const req = buildPaymentRequirements(config, resource, description).accepts[0];
   const facilitatorBody = JSON.stringify({
     payload: {
       scheme: 'eip2612',
@@ -203,10 +205,10 @@ export async function processPayment(
       nonce: auth.nonce,
     },
     requirements: {
-      tokenAddress: req.asset,
-      amount: req.maxAmountRequired,
-      recipient: req.payTo,
-      network: req.network,
+      tokenAddress: config.asset,
+      amount: config.amount,
+      recipient: config.payTo,
+      network: config.network,
     },
     signature: paymentPayload?.payload?.signature,
   });
@@ -248,13 +250,9 @@ export async function processPayment(
     if (ctx) ctx.waitUntil(settlePromise);
 
     return {
-      status: 'settled',
-      txHash: undefined,
-      settleResponse: null,
+      status: 'settle-pending',
       verifyMs,
-      settleMs: 0,
       totalMs: Date.now() - t0,
-      payer: auth.from,
     };
   }
 
@@ -282,10 +280,8 @@ export async function processPayment(
   return {
     status: 'settled',
     txHash,
-    settleResponse: settleData,
     verifyMs,
     settleMs,
     totalMs: Date.now() - t0,
-    payer: auth.from,
   };
 }

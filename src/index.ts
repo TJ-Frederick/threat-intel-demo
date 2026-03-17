@@ -123,9 +123,17 @@ export default {
           return jsonResponse({ error: 'Payment settlement failed', detail: outcome.detail }, 402, config);
         case 'settle-unreachable':
           return jsonResponse({ error: 'Facilitator settle unreachable', detail: outcome.detail }, 502, config);
+        case 'settle-pending': {
+          const data = generateThreatData(ip, outcome.totalMs, outcome.verifyMs, 0);
+          return jsonResponse(data, 200, config);
+        }
         case 'settled': {
           const data = generateThreatData(ip, outcome.totalMs, outcome.verifyMs, outcome.settleMs, outcome.txHash);
           return jsonResponse(data, 200, config);
+        }
+        default: {
+          const _exhaustive: never = outcome;
+          return jsonResponse({ error: 'Unexpected payment state' }, 500, config);
         }
       }
     }
