@@ -1057,7 +1057,7 @@ export function getFrontendHtml(paymentAddress: string): string {
           <div class="config-panel">
             <div class="config-field">
               <label>Agents</label>
-              <input type="number" id="swarmAgents" value="10" min="1" max="10" onchange="updateCost()" oninput="updateCost()" />
+              <input type="number" id="swarmAgents" value="10" min="1" max="100" onchange="updateCost()" oninput="updateCost()" />
             </div>
             <div class="config-field">
               <label>Requests per agent</label>
@@ -1485,7 +1485,15 @@ async function estimateGasWithFallback(txParams, fallbackGas) {
 }
 
 window.updateCost = function() {
-  const agents = parseInt(document.getElementById('swarmAgents').value) || 1;
+  const agentInput = document.getElementById('swarmAgents');
+  let agents = parseInt(agentInput.value) || 1;
+  if (agents > 100) {
+    agents = 100;
+    agentInput.value = 100;
+    agentInput.style.outline = '2px solid #e74c3c';
+    agentInput.title = 'Maximum 100 agents';
+    setTimeout(() => { agentInput.style.outline = ''; agentInput.title = ''; }, 2000);
+  }
   const perAgent = parseInt(document.getElementById('swarmCount').value) || 1;
   const totalUnits = agents * perAgent * 100;
   const sbc = (totalUnits / 1e6).toFixed(4);
@@ -1494,7 +1502,7 @@ window.updateCost = function() {
 
 window.launchSwarm = async function() {
   if (!connectedAddress) { connectWallet(); return; }
-  const numAgents = Math.min(10, Math.max(1, parseInt(document.getElementById('swarmAgents').value) || 10));
+  const numAgents = Math.min(100, Math.max(1, parseInt(document.getElementById('swarmAgents').value) || 10));
   const perAgent = Math.max(1, parseInt(document.getElementById('swarmCount').value) || 2);
   const amountPerAgent = BigInt(perAgent) * BigInt(100);
   const statusEl = document.getElementById('swarmStatus');
@@ -1552,7 +1560,7 @@ window.launchSwarm = async function() {
   try {
     const batchCallData = batchTransferCallData(TOKEN_ADDRESS, recipients, amounts);
     const batchGas = await estimateGasWithFallback(
-      { from: connectedAddress, to: BATCH_CONTRACT, data: batchCallData }, 200000 + numAgents * 80000
+      { from: connectedAddress, to: BATCH_CONTRACT, data: batchCallData }, 200000 + numAgents * 100000
     );
     statusEl.innerHTML = '<span class="spinner"></span>Batch funding ' + numAgents + ' agents... Confirm in wallet.';
     const batchTxHash = await window.walletClient.sendTransaction({
@@ -1607,8 +1615,6 @@ window.launchSwarm = async function() {
     el.scrollTop = el.scrollHeight;
   }
 
-  const settle = createSemaphore(1);
-
   const agentWork = async (agent, agentIdx) => {
     const account = agent.account;
     const ips = randomIPs(perAgent);
@@ -1660,20 +1666,15 @@ window.launchSwarm = async function() {
           };
           const xPayment = btoa(JSON.stringify(paymentPayload));
 
-          await settle.acquire();
-          let res;
-          try {
-            res = await fetch('/api/threat/' + encodeURIComponent(ip), {
-              headers: { 'X-Payment': xPayment }
-            });
-          } finally {
-            await new Promise(r => setTimeout(r, 150));
-            settle.release();
-          }
+          const t0 = Date.now();
+          const res = await fetch('/api/threat/' + encodeURIComponent(ip), {
+            headers: { 'X-Payment': xPayment }
+          });
+          const fetchMs = Date.now() - t0;
 
           if (!res.ok) {
             if (attempt < 2) {
-              await new Promise(r => setTimeout(r, 2000 * Math.pow(2, attempt)));
+              await new Promise(r => setTimeout(r, 300 * Math.pow(2, attempt)));
               continue;
             }
             const errBody = await res.text().catch(() => '');
@@ -1688,7 +1689,10 @@ window.launchSwarm = async function() {
           totalReqs++;
           totalSpent += 100;
           updateStats();
-          log(agentIdx, ip, 'score: ' + data.threat_score + ' \\u2192 0.0001 SBC', false, data.tx_hash);
+          const vMs = data.verify_ms || 0;
+          const sMs = data.settle_ms || 0;
+          const nMs = Math.max(0, fetchMs - vMs - sMs);
+          log(agentIdx, ip, 'score: ' + data.threat_score + ' (' + fetchMs + 'ms: v' + vMs + '/s' + sMs + '/n' + nMs + ') \\u2192 0.0001 SBC', false, data.tx_hash);
         } catch (err) {
           if (attempt >= 2) {
             log(agentIdx, ip, err.message, true);
@@ -1700,7 +1704,7 @@ window.launchSwarm = async function() {
   };
 
   const promises = agents.map((agent, idx) =>
-    new Promise(r => setTimeout(r, idx * 300)).then(() => agentWork(agent, idx))
+    agentWork(agent, idx)
   );
   await Promise.all(promises);
 
