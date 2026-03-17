@@ -1,13 +1,19 @@
 import { getFrontendHtml } from './frontend';
+import { type X402Config, processPayment, corsHeaders, jsonResponse } from './x402';
 
 interface Env {
   PAYMENT_ADDRESS: string;
   FACILITATOR_API_KEY?: string;
 }
 
-const TOKEN_ADDRESS = '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb';
-const FACILITATOR_URL = 'https://facilitator.andrs.dev';
-const AMOUNT = '100'; // 0.0001 SBC (6 decimals)
+const x402Config = (env: Env): X402Config => ({
+  asset: '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb',
+  network: 'eip155:723',
+  payTo: env.PAYMENT_ADDRESS,
+  facilitatorUrl: 'https://facilitator.andrs.dev',
+  facilitatorApiKey: env.FACILITATOR_API_KEY,
+  amount: '100', // 0.0001 SBC (6 decimals)
+});
 
 // Deterministic hash from IP string
 function hashIP(ip: string): number {
@@ -72,198 +78,56 @@ function generateThreatData(ip: string, settlementMs: number, verifyMs: number, 
   };
 }
 
-function getPaymentRequirements(resource: string, ip: string, paymentAddress: string) {
-  return {
-    accepts: [
-      {
-        scheme: 'exact',
-        network: 'eip155:723',
-        maxAmountRequired: AMOUNT,
-        resource,
-        description: `Threat intel query for ${ip}`,
-        payTo: paymentAddress,
-        maxTimeoutSeconds: 300,
-        asset: TOKEN_ADDRESS,
-        extra: {
-          assetTransferMethod: 'erc2612',
-          name: 'Stable Coin',
-          version: '1',
-        },
-      },
-    ],
-    x402Version: 2,
-  };
-}
-
-function corsHeaders(): Record<string, string> {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Payment',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  };
-}
-
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const config = x402Config(env);
 
     // CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders() });
+      return new Response(null, { status: 204, headers: corsHeaders(config) });
     }
 
     // Health check
     if (url.pathname === '/api/health') {
-      return Response.json({ status: 'ok' }, { headers: corsHeaders() });
+      return jsonResponse({ status: 'ok' }, 200, config);
     }
 
     // Threat intel endpoint
     const threatMatch = url.pathname.match(/^\/api\/threat\/(.+)$/);
     if (threatMatch) {
       const ip = decodeURIComponent(threatMatch[1]);
-      const resource = url.toString();
-      const paymentAddress = env.PAYMENT_ADDRESS;
 
-      const paymentHeader = request.headers.get('X-Payment');
-
-      // No payment → 402
-      if (!paymentHeader) {
-        const requirements = getPaymentRequirements(resource, ip, paymentAddress);
-        return Response.json(requirements, {
-          status: 402,
-          headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
-        });
-      }
-
-      // Decode payment
-      let paymentPayload: any;
-      try {
-        paymentPayload = JSON.parse(atob(paymentHeader));
-      } catch {
-        return Response.json({ error: 'Invalid X-Payment header' }, {
-          status: 400,
-          headers: corsHeaders(),
-        });
-      }
-
-      const paymentRequirements = getPaymentRequirements(resource, ip, paymentAddress);
-
-      // Build facilitator headers
-      const facilitatorHeaders: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (env.FACILITATOR_API_KEY) {
-        facilitatorHeaders['X-API-Key'] = env.FACILITATOR_API_KEY;
-      }
-
-      const auth = paymentPayload?.payload?.authorization || {};
-      const req = paymentRequirements.accepts[0];
-      const facilitatorBody = JSON.stringify({
-        payload: {
-          scheme: 'eip2612',
-          from: auth.from,
-          to: auth.to,
-          value: auth.value,
-          validAfter: auth.validAfter,
-          validBefore: auth.validBefore,
-          nonce: auth.nonce,
+      const outcome = await processPayment(
+        config,
+        request,
+        url.toString(),
+        `Threat intel query for ${ip}`,
+        {
+          skipVerify: url.searchParams.get('fast') === '1',
+          asyncSettle: url.searchParams.get('async') === '1',
         },
-        requirements: {
-          tokenAddress: req.asset,
-          amount: req.maxAmountRequired,
-          recipient: req.payTo,
-          network: req.network,
-        },
-        signature: paymentPayload?.payload?.signature,
-      });
+        ctx,
+      );
 
-      // Optimization flags:
-      //   ?fast=1  — skip verify, go straight to settle
-      //   ?async=1 — fire-and-forget settle (return data before settlement confirms)
-      const skipVerify = url.searchParams.get('fast') === '1';
-      const asyncSettle = url.searchParams.get('async') === '1';
-
-      // Verify (unless ?fast=1)
-      const t0 = Date.now();
-      let verifyMs = 0;
-      if (!skipVerify) {
-        let verifyRes: Response;
-        try {
-          verifyRes = await fetch(`${FACILITATOR_URL}/verify`, {
-            method: 'POST',
-            headers: facilitatorHeaders,
-            body: facilitatorBody,
-          });
-        } catch (e: any) {
-          return Response.json({ error: 'Facilitator verify unreachable', detail: e.message }, {
-            status: 502,
-            headers: corsHeaders(),
-          });
-        }
-        verifyMs = Date.now() - t0;
-
-        const verifyData: any = await verifyRes.json();
-        if (!verifyData.isValid) {
-          return Response.json({ error: 'Payment verification failed', detail: verifyData }, {
-            status: 402,
-            headers: corsHeaders(),
-          });
+      switch (outcome.status) {
+        case 'no-payment':
+          return jsonResponse(outcome.requirements, 402, config);
+        case 'invalid-header':
+          return jsonResponse({ error: 'Invalid X-Payment header' }, 400, config);
+        case 'verify-failed':
+          return jsonResponse({ error: 'Payment verification failed', detail: outcome.detail }, 402, config);
+        case 'verify-unreachable':
+          return jsonResponse({ error: 'Facilitator verify unreachable', detail: outcome.detail }, 502, config);
+        case 'settle-failed':
+          return jsonResponse({ error: 'Payment settlement failed', detail: outcome.detail }, 402, config);
+        case 'settle-unreachable':
+          return jsonResponse({ error: 'Facilitator settle unreachable', detail: outcome.detail }, 502, config);
+        case 'settled': {
+          const data = generateThreatData(ip, outcome.totalMs, outcome.verifyMs, outcome.settleMs, outcome.txHash);
+          return jsonResponse(data, 200, config);
         }
       }
-
-      // Settle
-      const settleOpts = {
-        method: 'POST',
-        headers: facilitatorHeaders,
-        body: facilitatorBody,
-      };
-
-      // Fire-and-forget mode: start settle but return data immediately
-      if (asyncSettle) {
-        const settlePromise = fetch(`${FACILITATOR_URL}/settle`, settleOpts)
-          .then(r => r.json())
-          .catch(() => {});
-        ctx.waitUntil(settlePromise);
-
-        const settlementMs = Date.now() - t0;
-        const data = generateThreatData(ip, settlementMs, verifyMs, 0);
-        (data as any)._mode = 'async';
-        return Response.json(data, {
-          headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
-        });
-      }
-
-      // Synchronous settle (default)
-      const t1 = Date.now();
-      let settleRes: Response;
-      try {
-        settleRes = await fetch(`${FACILITATOR_URL}/settle`, settleOpts);
-      } catch (e: any) {
-        return Response.json({ error: 'Facilitator settle unreachable', detail: e.message }, {
-          status: 502,
-          headers: corsHeaders(),
-        });
-      }
-      const settleMs = Date.now() - t1;
-
-      const settleData: any = await settleRes.json();
-      if (!settleData.success) {
-        return Response.json({ error: 'Payment settlement failed', detail: settleData }, {
-          status: 402,
-          headers: corsHeaders(),
-        });
-      }
-
-      const settlementMs = Date.now() - t0;
-      const txHash = settleData.transaction || settleData.txHash || settleData.transactionHash || settleData.hash;
-      const data = generateThreatData(ip, settlementMs, verifyMs, settleMs, txHash);
-      // Debug: include full settle response for latency investigation
-      (data as any)._settle_response = settleData;
-      if (skipVerify) (data as any)._mode = 'fast';
-
-      return Response.json(data, {
-        headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
-      });
     }
 
     // Frontend
@@ -273,6 +137,6 @@ export default {
       });
     }
 
-    return Response.json({ error: 'Not found' }, { status: 404, headers: corsHeaders() });
+    return jsonResponse({ error: 'Not found' }, 404, config);
   },
 };
