@@ -6,7 +6,7 @@ interface Env {
 }
 
 const TOKEN_ADDRESS = '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb';
-const FACILITATOR_URL = 'https://x402.stablecoin.xyz';
+const FACILITATOR_URL = 'https://facilitator.andrs.dev';
 const AMOUNT = '100'; // 0.0001 SBC (6 decimals)
 
 // Deterministic hash from IP string
@@ -23,7 +23,7 @@ function seededRandom(seed: number, index: number): number {
   return x - Math.floor(x);
 }
 
-function generateThreatData(ip: string, settlementMs: number, txHash?: string) {
+function generateThreatData(ip: string, settlementMs: number, verifyMs: number, settleMs: number, txHash?: string) {
   const seed = hashIP(ip);
 
   const categories = ['scanner', 'scraper', 'proxy', 'tor_exit', 'residential', 'datacenter', 'vpn'];
@@ -66,6 +66,8 @@ function generateThreatData(ip: string, settlementMs: number, txHash?: string) {
     request_cost: '$0.0001',
     settlement_network: 'Radius',
     settlement_time_ms: settlementMs,
+    verify_ms: verifyMs,
+    settle_ms: settleMs,
     ...(txHash ? { tx_hash: txHash } : {}),
   };
 }
@@ -102,7 +104,7 @@ function corsHeaders(): Record<string, string> {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // CORS preflight
@@ -154,49 +156,95 @@ export default {
         facilitatorHeaders['X-API-Key'] = env.FACILITATOR_API_KEY;
       }
 
+      const auth = paymentPayload?.payload?.authorization || {};
+      const req = paymentRequirements.accepts[0];
       const facilitatorBody = JSON.stringify({
-        paymentPayload,
-        paymentRequirements: paymentRequirements.accepts[0],
+        payload: {
+          scheme: 'eip2612',
+          from: auth.from,
+          to: auth.to,
+          value: auth.value,
+          validAfter: auth.validAfter,
+          validBefore: auth.validBefore,
+          nonce: auth.nonce,
+        },
+        requirements: {
+          tokenAddress: req.asset,
+          amount: req.maxAmountRequired,
+          recipient: req.payTo,
+          network: req.network,
+        },
+        signature: paymentPayload?.payload?.signature,
       });
 
-      // Verify
-      const t0 = Date.now();
-      let verifyRes: Response;
-      try {
-        verifyRes = await fetch(`${FACILITATOR_URL}/verify`, {
-          method: 'POST',
-          headers: facilitatorHeaders,
-          body: facilitatorBody,
-        });
-      } catch (e: any) {
-        return Response.json({ error: 'Facilitator verify unreachable', detail: e.message }, {
-          status: 502,
-          headers: corsHeaders(),
-        });
-      }
+      // Optimization flags:
+      //   ?fast=1  — skip verify, go straight to settle
+      //   ?async=1 — fire-and-forget settle (return data before settlement confirms)
+      const skipVerify = url.searchParams.get('fast') === '1';
+      const asyncSettle = url.searchParams.get('async') === '1';
 
-      const verifyData: any = await verifyRes.json();
-      if (!verifyData.isValid) {
-        return Response.json({ error: 'Payment verification failed', detail: verifyData }, {
-          status: 402,
-          headers: corsHeaders(),
-        });
+      // Verify (unless ?fast=1)
+      const t0 = Date.now();
+      let verifyMs = 0;
+      if (!skipVerify) {
+        let verifyRes: Response;
+        try {
+          verifyRes = await fetch(`${FACILITATOR_URL}/verify`, {
+            method: 'POST',
+            headers: facilitatorHeaders,
+            body: facilitatorBody,
+          });
+        } catch (e: any) {
+          return Response.json({ error: 'Facilitator verify unreachable', detail: e.message }, {
+            status: 502,
+            headers: corsHeaders(),
+          });
+        }
+        verifyMs = Date.now() - t0;
+
+        const verifyData: any = await verifyRes.json();
+        if (!verifyData.isValid) {
+          return Response.json({ error: 'Payment verification failed', detail: verifyData }, {
+            status: 402,
+            headers: corsHeaders(),
+          });
+        }
       }
 
       // Settle
+      const settleOpts = {
+        method: 'POST',
+        headers: facilitatorHeaders,
+        body: facilitatorBody,
+      };
+
+      // Fire-and-forget mode: start settle but return data immediately
+      if (asyncSettle) {
+        const settlePromise = fetch(`${FACILITATOR_URL}/settle`, settleOpts)
+          .then(r => r.json())
+          .catch(() => {});
+        ctx.waitUntil(settlePromise);
+
+        const settlementMs = Date.now() - t0;
+        const data = generateThreatData(ip, settlementMs, verifyMs, 0);
+        (data as any)._mode = 'async';
+        return Response.json(data, {
+          headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Synchronous settle (default)
+      const t1 = Date.now();
       let settleRes: Response;
       try {
-        settleRes = await fetch(`${FACILITATOR_URL}/settle`, {
-          method: 'POST',
-          headers: facilitatorHeaders,
-          body: facilitatorBody,
-        });
+        settleRes = await fetch(`${FACILITATOR_URL}/settle`, settleOpts);
       } catch (e: any) {
         return Response.json({ error: 'Facilitator settle unreachable', detail: e.message }, {
           status: 502,
           headers: corsHeaders(),
         });
       }
+      const settleMs = Date.now() - t1;
 
       const settleData: any = await settleRes.json();
       if (!settleData.success) {
@@ -207,8 +255,11 @@ export default {
       }
 
       const settlementMs = Date.now() - t0;
-      const txHash = settleData.transaction;
-      const data = generateThreatData(ip, settlementMs, txHash);
+      const txHash = settleData.transaction || settleData.txHash || settleData.transactionHash || settleData.hash;
+      const data = generateThreatData(ip, settlementMs, verifyMs, settleMs, txHash);
+      // Debug: include full settle response for latency investigation
+      (data as any)._settle_response = settleData;
+      if (skipVerify) (data as any)._mode = 'fast';
 
       return Response.json(data, {
         headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
