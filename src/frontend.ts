@@ -1476,10 +1476,8 @@ async function estimateGasWithFallback(txParams, fallbackGas) {
       data: txParams.data,
     });
     const gas = '0x' + (estimate + estimate / BigInt(5)).toString(16);
-    console.log('Gas estimated:', Number(estimate), '→ with buffer:', gas);
     return gas;
   } catch (e) {
-    console.warn('Gas estimation failed, using fallback ' + fallbackGas + ':', e);
     return '0x' + BigInt(fallbackGas).toString(16);
   }
 }
