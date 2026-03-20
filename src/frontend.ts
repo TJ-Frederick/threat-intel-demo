@@ -1094,9 +1094,9 @@ import { createPublicClient, createWalletClient, http, encodeFunctionData, decod
 import { privateKeyToAccount } from 'https://esm.sh/viem/accounts';
 
 const PAYMENT_ADDRESS = '${paymentAddress}';
-const FACILITATOR_ADDRESS = '0x36eC8F4BE5667E3A00598162B6c3Fb9387086304';
-const PERMIT_SETTLER_ADDRESS = '0x494C3586A75a5B94e40d9d1780B2B03dbEa37F51';
 const TOKEN_ADDRESS = '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb';
+const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
+const X402_PERMIT2_PROXY = '0x402085c248EeA27D92E8b30b2C58ed07f9E20001';
 const RADIUS_RPC = 'https://rpc.radiustech.xyz/cebu04iqsbb2xhuklnlnj68amqfukg8ayl32tuwga9ldsuf2';
 const BATCH_CONTRACT = '0x71e14b65a8305a9a95a675abccb993f929b53885';
 
@@ -1138,6 +1138,35 @@ const permitDomain = {
   chainId: 723,
   verifyingContract: TOKEN_ADDRESS,
 };
+
+const permit2Types = {
+  PermitWitnessTransferFrom: [
+    { name: 'permitted', type: 'TokenPermissions' },
+    { name: 'spender', type: 'address' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'deadline', type: 'uint256' },
+    { name: 'witness', type: 'Witness' },
+  ],
+  TokenPermissions: [
+    { name: 'token', type: 'address' },
+    { name: 'amount', type: 'uint256' },
+  ],
+  Witness: [
+    { name: 'to', type: 'address' },
+    { name: 'validAfter', type: 'uint256' },
+  ],
+};
+const permit2Domain = {
+  name: 'Permit2',
+  chainId: 723,
+  verifyingContract: PERMIT2_ADDRESS,
+};
+
+function randomPermit2Nonce() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return BigInt('0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''));
+}
 
 let connectedAddress = null;
 let swarmRunning = false;
@@ -1325,14 +1354,15 @@ window.runQuery = async function() {
     const res402 = await fetch('/api/threat/' + encodeURIComponent(ip));
     if (res402.status !== 402) throw new Error('Expected 402, got ' + res402.status);
     const body402 = await res402.json();
-    const req = body402.accepts[0];
+    const req = body402.paymentRequirements[0];
 
-    statusEl.innerHTML = '<span class="spinner"></span>Signing permit...';
+    statusEl.innerHTML = '<span class="spinner"></span>Signing EIP-2612 permit (approve Permit2)...';
 
-    const nonce = await getNonce(connectedAddress);
+    const permitNonce = await getNonce(connectedAddress);
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
 
-    const typedData = JSON.stringify({
+    // 1. Sign EIP-2612 permit: approve Permit2 contract to spend SBC
+    const eip2612TypedData = JSON.stringify({
       types: {
         EIP712Domain: [
           { name: 'name', type: 'string' },
@@ -1346,35 +1376,76 @@ window.runQuery = async function() {
       domain: permitDomain,
       message: {
         owner: connectedAddress,
-        spender: PERMIT_SETTLER_ADDRESS,
-        value: req.maxAmountRequired.toString(),
-        nonce: nonce.toString(),
+        spender: PERMIT2_ADDRESS,
+        value: req.amount.toString(),
+        nonce: permitNonce.toString(),
         deadline: deadline.toString(),
       },
     });
 
-    const signature = await window.ethereum.request({
+    const eip2612Signature = await window.ethereum.request({
       method: 'eth_signTypedData_v4',
-      params: [connectedAddress, typedData],
+      params: [connectedAddress, eip2612TypedData],
+    });
+
+    statusEl.innerHTML = '<span class="spinner"></span>Signing Permit2 transfer...';
+
+    // 2. Sign Permit2 PermitWitnessTransferFrom
+    const permit2Nonce = randomPermit2Nonce();
+    const permit2TypedData = JSON.stringify({
+      types: {
+        EIP712Domain: [
+          { name: 'name', type: 'string' },
+          { name: 'chainId', type: 'uint256' },
+          { name: 'verifyingContract', type: 'address' },
+        ],
+        ...permit2Types
+      },
+      primaryType: 'PermitWitnessTransferFrom',
+      domain: permit2Domain,
+      message: {
+        permitted: { token: TOKEN_ADDRESS, amount: req.amount.toString() },
+        spender: X402_PERMIT2_PROXY,
+        nonce: permit2Nonce.toString(),
+        deadline: deadline.toString(),
+        witness: { to: PAYMENT_ADDRESS, validAfter: '0' },
+      },
+    });
+
+    const permit2Signature = await window.ethereum.request({
+      method: 'eth_signTypedData_v4',
+      params: [connectedAddress, permit2TypedData],
     });
 
     statusEl.innerHTML = '<span class="spinner"></span>Settling payment...';
 
+    // 3. Construct payload (Permit2 + eip2612GasSponsoring)
     const paymentPayload = {
       x402Version: 2,
-      resource: resource,
-      accepted: { scheme: 'exact', network: 'eip155:723' },
+      scheme: 'exact',
+      network: 'eip155:723',
+      resource: { url: resource, description: 'Threat intel query for ' + ip, mimeType: 'application/json' },
+      accepted: req,
       payload: {
-        signature: signature,
-        authorization: {
+        signature: permit2Signature,
+        permit2Authorization: {
+          permitted: { token: TOKEN_ADDRESS, amount: req.amount.toString() },
           from: connectedAddress,
-          to: PAYMENT_ADDRESS,
-          value: req.maxAmountRequired.toString(),
-          validAfter: '0',
-          validBefore: deadline.toString(),
-          nonce: nonce.toString(),
-        }
-      }
+          spender: X402_PERMIT2_PROXY,
+          nonce: permit2Nonce.toString(),
+          deadline: deadline.toString(),
+          witness: { to: PAYMENT_ADDRESS, validAfter: '0' },
+        },
+      },
+      extensions: {
+        eip2612GasSponsoring: {
+          info: {
+            amount: req.amount.toString(),
+            deadline: deadline.toString(),
+            signature: eip2612Signature,
+          },
+        },
+      },
     };
     const xPayment = btoa(JSON.stringify(paymentPayload));
 
@@ -1616,7 +1687,7 @@ window.launchSwarm = async function() {
   const agentWork = async (agent, agentIdx) => {
     const account = agent.account;
     const ips = randomIPs(perAgent);
-    let currentNonce = await getNonce(account.address);
+    let currentPermitNonce = await getNonce(account.address);
 
     for (let i = 0; i < ips.length; i++) {
       if (swarmAbort) return;
@@ -1628,39 +1699,74 @@ window.launchSwarm = async function() {
           const resource = window.location.origin + '/api/threat/' + encodeURIComponent(ip);
 
           if (attempt > 0) {
-            try { currentNonce = await getNonce(account.address); } catch(e) {}
+            try { currentPermitNonce = await getNonce(account.address); } catch(e) {}
           }
 
           const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
 
-          const signature = await account.signTypedData({
+          // 1. Sign EIP-2612 permit: approve Permit2 contract
+          const eip2612Signature = await account.signTypedData({
             domain: permitDomain,
             types: permitTypes,
             primaryType: 'Permit',
             message: {
               owner: account.address,
-              spender: PERMIT_SETTLER_ADDRESS,
+              spender: PERMIT2_ADDRESS,
               value: BigInt(100),
-              nonce: currentNonce,
+              nonce: currentPermitNonce,
               deadline: deadline,
+            },
+          });
+
+          // 2. Sign Permit2 PermitWitnessTransferFrom
+          const p2Nonce = randomPermit2Nonce();
+          const permit2Signature = await account.signTypedData({
+            domain: permit2Domain,
+            types: permit2Types,
+            primaryType: 'PermitWitnessTransferFrom',
+            message: {
+              permitted: { token: TOKEN_ADDRESS, amount: BigInt(100) },
+              spender: X402_PERMIT2_PROXY,
+              nonce: p2Nonce,
+              deadline: deadline,
+              witness: { to: PAYMENT_ADDRESS, validAfter: BigInt(0) },
             },
           });
 
           const paymentPayload = {
             x402Version: 2,
-            resource: resource,
-            accepted: { scheme: 'exact', network: 'eip155:723' },
+            scheme: 'exact',
+            network: 'eip155:723',
+            resource: { url: resource, description: 'Threat intel query for ' + ip, mimeType: 'application/json' },
+            accepted: {
+              scheme: 'exact',
+              network: 'eip155:723',
+              amount: '100',
+              asset: TOKEN_ADDRESS,
+              payTo: PAYMENT_ADDRESS,
+              maxTimeoutSeconds: 300,
+              extra: { name: 'Stable Coin', version: '1', assetTransferMethod: 'permit2' }
+            },
             payload: {
-              signature: signature,
-              authorization: {
+              signature: permit2Signature,
+              permit2Authorization: {
+                permitted: { token: TOKEN_ADDRESS, amount: '100' },
                 from: account.address,
-                to: PAYMENT_ADDRESS,
-                value: '100',
-                validAfter: '0',
-                validBefore: deadline.toString(),
-                nonce: currentNonce.toString(),
-              }
-            }
+                spender: X402_PERMIT2_PROXY,
+                nonce: p2Nonce.toString(),
+                deadline: deadline.toString(),
+                witness: { to: PAYMENT_ADDRESS, validAfter: '0' },
+              },
+            },
+            extensions: {
+              eip2612GasSponsoring: {
+                info: {
+                  amount: '100',
+                  deadline: deadline.toString(),
+                  signature: eip2612Signature,
+                },
+              },
+            },
           };
           const xPayment = btoa(JSON.stringify(paymentPayload));
 
@@ -1681,7 +1787,7 @@ window.launchSwarm = async function() {
 
           const data = await res.json();
 
-          currentNonce = currentNonce + BigInt(1);
+          currentPermitNonce = currentPermitNonce + BigInt(1);
           success = true;
 
           totalReqs++;

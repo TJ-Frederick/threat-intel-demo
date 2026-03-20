@@ -43,32 +43,30 @@ export interface PaymentOptions {
   asyncSettle?: boolean;
 }
 
-/** A single accepted payment method in the 402 response */
-export interface PaymentAccept {
+/** A single payment requirement in the 402 response (x402 v2) */
+export interface PaymentRequirement {
   scheme: string;
   network: string;
-  maxAmountRequired: string;
-  resource: string;
-  description: string;
+  amount: string;
+  asset: string;
   payTo: string;
   maxTimeoutSeconds: number;
-  asset: string;
   extra: {
-    assetTransferMethod: string;
     name: string;
     version: string;
+    assetTransferMethod?: string;
   };
 }
 
-/** The full 402 response body */
-export interface PaymentRequirements {
-  accepts: PaymentAccept[];
+/** The full 402 response body (x402 v2) */
+export interface PaymentRequirementsResponse {
+  paymentRequirements: PaymentRequirement[];
   x402Version: number;
 }
 
 /** Every possible outcome of processPayment */
 export type PaymentOutcome =
-  | { status: 'no-payment'; requirements: PaymentRequirements }
+  | { status: 'no-payment'; requirements: PaymentRequirementsResponse }
   | { status: 'invalid-header' }
   | { status: 'verify-failed'; detail: any }
   | { status: 'verify-unreachable'; detail: string }
@@ -89,27 +87,23 @@ export type PaymentOutcome =
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Build the 402 response body describing what payment the server accepts. */
+/** Build the 402 response body describing what payment the server accepts (x402 v2). */
 export function buildPaymentRequirements(
   config: X402Config,
-  resource: string,
-  description: string,
-): PaymentRequirements {
+): PaymentRequirementsResponse {
   return {
-    accepts: [
+    paymentRequirements: [
       {
         scheme: 'exact',
         network: config.network,
-        maxAmountRequired: config.amount,
-        resource,
-        description,
+        amount: config.amount,
+        asset: config.asset,
         payTo: config.payTo,
         maxTimeoutSeconds: 300,
-        asset: config.asset,
         extra: {
-          assetTransferMethod: 'erc2612',
           name: config.tokenName ?? 'Stable Coin',
           version: config.tokenVersion ?? '1',
+          assetTransferMethod: 'permit2',
         },
       },
     ],
@@ -173,7 +167,7 @@ export async function processPayment(
   if (!paymentHeader) {
     return {
       status: 'no-payment',
-      requirements: buildPaymentRequirements(config, resource, description),
+      requirements: buildPaymentRequirements(config),
     };
   }
 
@@ -193,24 +187,10 @@ export async function processPayment(
     facilitatorHeaders['X-API-Key'] = config.facilitatorApiKey;
   }
 
-  const auth = paymentPayload?.payload?.authorization || {};
   const facilitatorBody = JSON.stringify({
-    payload: {
-      scheme: 'eip2612',
-      from: auth.from,
-      to: auth.to,
-      value: auth.value,
-      validAfter: auth.validAfter,
-      validBefore: auth.validBefore,
-      nonce: auth.nonce,
-    },
-    requirements: {
-      tokenAddress: config.asset,
-      amount: config.amount,
-      recipient: config.payTo,
-      network: config.network,
-    },
-    signature: paymentPayload?.payload?.signature,
+    x402Version: 2,
+    paymentPayload: paymentPayload,
+    paymentRequirements: buildPaymentRequirements(config).paymentRequirements[0],
   });
 
   const settleOpts = {
