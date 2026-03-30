@@ -1090,86 +1090,15 @@ export function getFrontendHtml(paymentAddress: string): string {
 </div>
 
 <script type="module">
-import { createPublicClient, createWalletClient, http, encodeFunctionData, decodeFunctionResult, custom, defineChain } from 'https://esm.sh/viem';
-import { privateKeyToAccount } from 'https://esm.sh/viem/accounts';
+import { createSwarm, signX402Payment } from '/modules/swarm.js';
+import { createWalletClient, custom } from 'https://esm.sh/viem';
 
 const PAYMENT_ADDRESS = '${paymentAddress}';
-const TOKEN_ADDRESS = '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb';
-const PERMIT2_ADDRESS = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
-const X402_PERMIT2_PROXY = '0x402085c248EeA27D92E8b30b2C58ed07f9E20001';
 const RADIUS_RPC = 'https://rpc.radiustech.xyz/cebu04iqsbb2xhuklnlnj68amqfukg8ayl32tuwga9ldsuf2';
-const BATCH_CONTRACT = '0x71e14b65a8305a9a95a675abccb993f929b53885';
 
-const radius = defineChain({
-  id: 723,
-  name: 'Radius',
-  nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-  rpcUrls: { default: { http: [RADIUS_RPC] } },
-});
-
-const publicClient = createPublicClient({ chain: radius, transport: http(RADIUS_RPC) });
-
-const balanceOfData = (addr) => encodeFunctionData({ abi: [{ name: 'balanceOf', type: 'function', inputs: [{ name: 'account', type: 'address' }], outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view' }], functionName: 'balanceOf', args: [addr] });
-const noncesData = (addr) => encodeFunctionData({ abi: [{ name: 'nonces', type: 'function', inputs: [{ name: 'owner', type: 'address' }], outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view' }], functionName: 'nonces', args: [addr] });
-const decodeUint = (data) => decodeFunctionResult({ abi: [{ name: 'x', type: 'function', inputs: [], outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view' }], functionName: 'x', data });
-
-async function getNonce(addr) {
-  const data = await publicClient.call({ to: TOKEN_ADDRESS, data: noncesData(addr) });
-  return decodeUint(data.data);
-}
-
-async function getBalance(addr) {
-  const data = await publicClient.call({ to: TOKEN_ADDRESS, data: balanceOfData(addr) });
-  return decodeUint(data.data);
-}
-
-const permitTypes = {
-  Permit: [
-    { name: 'owner', type: 'address' },
-    { name: 'spender', type: 'address' },
-    { name: 'value', type: 'uint256' },
-    { name: 'nonce', type: 'uint256' },
-    { name: 'deadline', type: 'uint256' },
-  ]
-};
-const permitDomain = {
-  name: 'Stable Coin',
-  version: '1',
-  chainId: 723,
-  verifyingContract: TOKEN_ADDRESS,
-};
-
-const permit2Types = {
-  PermitWitnessTransferFrom: [
-    { name: 'permitted', type: 'TokenPermissions' },
-    { name: 'spender', type: 'address' },
-    { name: 'nonce', type: 'uint256' },
-    { name: 'deadline', type: 'uint256' },
-    { name: 'witness', type: 'Witness' },
-  ],
-  TokenPermissions: [
-    { name: 'token', type: 'address' },
-    { name: 'amount', type: 'uint256' },
-  ],
-  Witness: [
-    { name: 'to', type: 'address' },
-    { name: 'validAfter', type: 'uint256' },
-  ],
-};
-const permit2Domain = {
-  name: 'Permit2',
-  chainId: 723,
-  verifyingContract: PERMIT2_ADDRESS,
-};
-
-function randomPermit2Nonce() {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return BigInt('0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(''));
-}
+const swarm = createSwarm({ paymentAddress: PAYMENT_ADDRESS, rpcUrl: RADIUS_RPC });
 
 let connectedAddress = null;
-let swarmRunning = false;
 
 // ── Sidebar / Nav ──
 
@@ -1291,24 +1220,25 @@ window.connectWallet = async function() {
     const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
     connectedAddress = accounts[0];
 
+    const chainIdHex = '0x' + swarm.config.chainId.toString(16);
     try {
-      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x2d3' }] });
+      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainIdHex }] });
     } catch (switchErr) {
       if (switchErr.code === 4902) {
         await window.ethereum.request({
           method: 'wallet_addEthereumChain',
           params: [{
-            chainId: '0x2d3',
-            chainName: 'Radius',
+            chainId: chainIdHex,
+            chainName: swarm.config.chainName,
             nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-            rpcUrls: ['https://rpc.radiustech.xyz/cebu04iqsbb2xhuklnlnj68amqfukg8ayl32tuwga9ldsuf2'],
+            rpcUrls: [swarm.config.rpcUrl],
           }]
         });
       }
     }
 
     window.walletClient = createWalletClient({
-      chain: radius,
+      chain: swarm.chain,
       transport: custom(window.ethereum),
     });
 
@@ -1320,7 +1250,7 @@ window.connectWallet = async function() {
     btn.style.color = 'var(--success)';
 
     try {
-      const bal = await getBalance(connectedAddress);
+      const bal = await swarm.getBalance(connectedAddress);
       const formatted = (Number(bal) / 1e6).toFixed(4);
       document.getElementById('walletBal').textContent = formatted + ' SBC';
     } catch (e) {
@@ -1356,98 +1286,20 @@ window.runQuery = async function() {
     const body402 = await res402.json();
     const req = body402.paymentRequirements[0];
 
-    statusEl.innerHTML = '<span class="spinner"></span>Signing EIP-2612 permit (approve Permit2)...';
+    statusEl.innerHTML = '<span class="spinner"></span>Signing payment permits...';
 
-    const permitNonce = await getNonce(connectedAddress);
-    const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
+    const permitNonce = await swarm.getNonce(connectedAddress);
 
-    // 1. Sign EIP-2612 permit: approve Permit2 contract to spend SBC
-    const eip2612TypedData = JSON.stringify({
-      types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
-        ...permitTypes
-      },
-      primaryType: 'Permit',
-      domain: permitDomain,
-      message: {
-        owner: connectedAddress,
-        spender: PERMIT2_ADDRESS,
-        value: req.amount.toString(),
-        nonce: permitNonce.toString(),
-        deadline: deadline.toString(),
-      },
-    });
-
-    const eip2612Signature = await window.ethereum.request({
-      method: 'eth_signTypedData_v4',
-      params: [connectedAddress, eip2612TypedData],
-    });
-
-    statusEl.innerHTML = '<span class="spinner"></span>Signing Permit2 transfer...';
-
-    // 2. Sign Permit2 PermitWitnessTransferFrom
-    const permit2Nonce = randomPermit2Nonce();
-    const permit2TypedData = JSON.stringify({
-      types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
-        ...permit2Types
-      },
-      primaryType: 'PermitWitnessTransferFrom',
-      domain: permit2Domain,
-      message: {
-        permitted: { token: TOKEN_ADDRESS, amount: req.amount.toString() },
-        spender: X402_PERMIT2_PROXY,
-        nonce: permit2Nonce.toString(),
-        deadline: deadline.toString(),
-        witness: { to: PAYMENT_ADDRESS, validAfter: '0' },
-      },
-    });
-
-    const permit2Signature = await window.ethereum.request({
-      method: 'eth_signTypedData_v4',
-      params: [connectedAddress, permit2TypedData],
+    const { xPayment } = await signX402Payment({
+      signTypedData: (params) => window.walletClient.signTypedData({ account: connectedAddress, ...params }),
+      owner: connectedAddress,
+      permitNonce: permitNonce,
+      resource: { url: resource, description: 'Threat intel query for ' + ip, mimeType: 'application/json' },
+      accepted: req,
+      config: swarm.config,
     });
 
     statusEl.innerHTML = '<span class="spinner"></span>Settling payment...';
-
-    // 3. Construct payload (Permit2 + eip2612GasSponsoring)
-    const paymentPayload = {
-      x402Version: 2,
-      scheme: 'exact',
-      network: 'eip155:723',
-      resource: { url: resource, description: 'Threat intel query for ' + ip, mimeType: 'application/json' },
-      accepted: req,
-      payload: {
-        signature: permit2Signature,
-        permit2Authorization: {
-          permitted: { token: TOKEN_ADDRESS, amount: req.amount.toString() },
-          from: connectedAddress,
-          spender: X402_PERMIT2_PROXY,
-          nonce: permit2Nonce.toString(),
-          deadline: deadline.toString(),
-          witness: { to: PAYMENT_ADDRESS, validAfter: '0' },
-        },
-      },
-      extensions: {
-        eip2612GasSponsoring: {
-          info: {
-            amount: req.amount.toString(),
-            deadline: deadline.toString(),
-            signature: eip2612Signature,
-          },
-        },
-      },
-    };
-    const xPayment = btoa(JSON.stringify(paymentPayload));
 
     const res = await fetch('/api/threat/' + encodeURIComponent(ip), {
       headers: { 'X-Payment': xPayment }
@@ -1474,7 +1326,7 @@ window.runQuery = async function() {
 
     // Refresh balance
     try {
-      const bal = await getBalance(connectedAddress);
+      const bal = await swarm.getBalance(connectedAddress);
       document.getElementById('walletBal').textContent = (Number(bal) / 1e6).toFixed(4) + ' SBC';
     } catch(e) {}
 
@@ -1503,54 +1355,22 @@ window.copyCurl = function() {
 
 // ── Swarm Demo ──
 
-let swarmAbort = false;
-
-function createSemaphore(max) {
-  let current = 0;
-  const queue = [];
-  return {
-    async acquire() {
-      if (current < max) { current++; return; }
-      await new Promise(resolve => queue.push(resolve));
-      current++;
-    },
-    release() {
-      current--;
-      if (queue.length > 0) queue.shift()();
-    }
-  };
+function randomIPs(count) {
+  const ips = [];
+  for (let i = 0; i < count; i++) {
+    ips.push(Math.floor(Math.random()*223+1) + '.' + Math.floor(Math.random()*256) + '.' + Math.floor(Math.random()*256) + '.' + Math.floor(Math.random()*256));
+  }
+  return ips;
 }
 
-const transferData = (to, amount) => encodeFunctionData({
-  abi: [{ name: 'transfer', type: 'function', inputs: [{ name: 'to', type: 'address' }, { name: 'amount', type: 'uint256' }], outputs: [{ name: '', type: 'bool' }], stateMutability: 'nonpayable' }],
-  functionName: 'transfer',
-  args: [to, amount]
-});
-
-const approveData = (spender, amount) => encodeFunctionData({
-  abi: [{ name: 'approve', type: 'function', inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }], outputs: [{ name: '', type: 'bool' }], stateMutability: 'nonpayable' }],
-  functionName: 'approve',
-  args: [spender, amount]
-});
-
-const batchTransferCallData = (token, recipients, amounts) => encodeFunctionData({
-  abi: [{ name: 'batchTransfer', type: 'function', inputs: [{ name: 'token', type: 'address' }, { name: 'recipients', type: 'address[]' }, { name: 'amounts', type: 'uint256[]' }], outputs: [], stateMutability: 'nonpayable' }],
-  functionName: 'batchTransfer',
-  args: [token, recipients, amounts]
-});
-
-async function estimateGasWithFallback(txParams, fallbackGas) {
-  try {
-    const estimate = await publicClient.estimateGas({
-      account: txParams.from,
-      to: txParams.to,
-      data: txParams.data,
-    });
-    const gas = '0x' + (estimate + estimate / BigInt(5)).toString(16);
-    return gas;
-  } catch (e) {
-    return '0x' + BigInt(fallbackGas).toString(16);
-  }
+function generateThreatRequests(agentIndex, count) {
+  return randomIPs(count).map(function(ip) {
+    return {
+      url: window.location.origin + '/api/threat/' + encodeURIComponent(ip),
+      description: ip,
+      mimeType: 'application/json',
+    };
+  });
 }
 
 window.updateCost = function() {
@@ -1564,285 +1384,89 @@ window.updateCost = function() {
     setTimeout(() => { agentInput.style.outline = ''; agentInput.title = ''; }, 2000);
   }
   const perAgent = parseInt(document.getElementById('swarmCount').value) || 1;
-  const totalUnits = agents * perAgent * 100;
+  const costPerReq = Number(swarm.config.amountPerRequest);
+  const totalUnits = agents * perAgent * costPerReq;
   const sbc = (totalUnits / 1e6).toFixed(4);
   document.getElementById('swarmCost').textContent = sbc + ' SBC';
 };
 
 window.launchSwarm = async function() {
   if (!connectedAddress) { connectWallet(); return; }
-  const numAgents = Math.min(100, Math.max(1, parseInt(document.getElementById('swarmAgents').value) || 10));
-  const perAgent = Math.max(1, parseInt(document.getElementById('swarmCount').value) || 2);
-  const amountPerAgent = BigInt(perAgent) * BigInt(100);
+  const numAgents = parseInt(document.getElementById('swarmAgents').value) || 10;
+  const perAgent = parseInt(document.getElementById('swarmCount').value) || 2;
   const statusEl = document.getElementById('swarmStatus');
 
-  swarmAbort = false;
   statusEl.className = 'status-msg';
-  statusEl.innerHTML = '<span class="spinner"></span>Generating ' + numAgents + ' agent wallets...';
-
-  const agents = [];
-  for (let i = 0; i < numAgents; i++) {
-    const bytes = new Uint8Array(32);
-    crypto.getRandomValues(bytes);
-    const hex = '0x' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-    const account = privateKeyToAccount(hex);
-    agents.push({ account, key: hex });
-  }
-
-  const totalFunding = amountPerAgent * BigInt(numAgents);
-  statusEl.innerHTML = '<span class="spinner"></span>Checking balances...';
-
-  const ethBalance = await publicClient.getBalance({ address: connectedAddress });
-  const minEthRequired = BigInt(5000000000000000); // 0.005 ETH
-  if (ethBalance < minEthRequired) {
-    statusEl.className = 'status-msg error';
-    statusEl.textContent = 'Insufficient ETH for gas. Need ~0.005 ETH, have ' + (Number(ethBalance) / 1e18).toFixed(4) + ' ETH.';
-    return;
-  }
-
-  statusEl.innerHTML = '<span class="spinner"></span>Estimating gas...';
-  try {
-    const approveCallData = approveData(BATCH_CONTRACT, totalFunding);
-    const approveGas = await estimateGasWithFallback(
-      { from: connectedAddress, to: TOKEN_ADDRESS, data: approveCallData }, 200000
-    );
-    statusEl.innerHTML = '<span class="spinner"></span>Approving batch funding... Confirm in wallet.';
-    const approveTxHash = await window.walletClient.sendTransaction({
-      account: connectedAddress,
-      to: TOKEN_ADDRESS,
-      data: approveCallData,
-      gas: BigInt(parseInt(approveGas, 16)),
-      chain: radius,
-    });
-    statusEl.innerHTML = '<span class="spinner"></span>Waiting for approval tx...';
-    await waitForTx(approveTxHash);
-  } catch (err) {
-    statusEl.className = 'status-msg error';
-    statusEl.textContent = 'Approval failed: ' + (err.message || err) + (err.txHash ? ' tx: ' + err.txHash : '');
-    console.error('Approve error:', err);
-    return;
-  }
-
-  const recipients = agents.map(a => a.account.address);
-  const amounts = agents.map(() => amountPerAgent);
-  statusEl.innerHTML = '<span class="spinner"></span>Estimating gas for batch transfer...';
-  try {
-    const batchCallData = batchTransferCallData(TOKEN_ADDRESS, recipients, amounts);
-    const batchGas = await estimateGasWithFallback(
-      { from: connectedAddress, to: BATCH_CONTRACT, data: batchCallData }, 200000 + numAgents * 100000
-    );
-    statusEl.innerHTML = '<span class="spinner"></span>Batch funding ' + numAgents + ' agents... Confirm in wallet.';
-    const batchTxHash = await window.walletClient.sendTransaction({
-      account: connectedAddress,
-      to: BATCH_CONTRACT,
-      data: batchCallData,
-      gas: BigInt(parseInt(batchGas, 16)),
-      chain: radius,
-    });
-    statusEl.innerHTML = '<span class="spinner"></span>Waiting for batch funding tx...';
-    await waitForTx(batchTxHash);
-  } catch (err) {
-    statusEl.className = 'status-msg error';
-    statusEl.textContent = 'Batch funding failed: ' + (err.message || err);
-    console.error('Batch funding error:', err);
-    return;
-  }
-
-  swarmRunning = true;
   document.getElementById('swarmBtn').style.display = 'none';
   document.getElementById('swarmStop').style.display = '';
   document.getElementById('swarmStats').classList.add('visible');
   document.getElementById('swarmLog').classList.add('visible');
   document.getElementById('swarmLog').innerHTML = '';
-  statusEl.innerHTML = '<span class="spinner"></span>Swarm active!';
 
-  let totalReqs = 0, totalSpent = 0;
-  const startTime = Date.now();
-
-  const randomIPs = (count) => {
-    const ips = [];
-    for (let i = 0; i < count; i++) {
-      ips.push(Math.floor(Math.random()*223+1) + '.' + Math.floor(Math.random()*256) + '.' + Math.floor(Math.random()*256) + '.' + Math.floor(Math.random()*256));
-    }
-    return ips;
-  };
-
-  function updateStats() {
-    document.getElementById('statTotal').textContent = totalReqs;
-    document.getElementById('statSpent').textContent = (totalSpent / 1e6).toFixed(4);
-    const elapsed = (Date.now() - startTime) / 1000;
-    document.getElementById('statRps').textContent = elapsed > 0 ? (totalReqs / elapsed).toFixed(1) : '0';
-  }
-
-  function log(agentIdx, ip, msg, isError, txHash) {
+  function logEntry(agentIdx, id, msg, isError, txHash) {
     const el = document.getElementById('swarmLog');
     const entry = document.createElement('div');
     entry.className = 'entry';
     const txCol = txHash ? '<a class="tx-col" href="https://network.radiustech.xyz/tx/' + txHash + '" target="_blank" style="color:var(--cf-orange);text-decoration:none;">tx &#8599;</a>' : (isError ? '' : '<span class="tx-col"></span>');
-    entry.innerHTML = '<span class="agent-tag">Agent ' + (agentIdx+1) + '</span> <span style="color:var(--gray-5)">' + ip + '</span> <span class="msg ' + (isError ? 'err' : 'ok') + '">' + msg + '</span>' + txCol;
+    entry.innerHTML = '<span class="agent-tag">Agent ' + (agentIdx+1) + '</span> <span style="color:var(--gray-5)">' + id + '</span> <span class="msg ' + (isError ? 'err' : 'ok') + '">' + msg + '</span>' + txCol;
     el.appendChild(entry);
     el.scrollTop = el.scrollHeight;
   }
 
-  const agentWork = async (agent, agentIdx) => {
-    const account = agent.account;
-    const ips = randomIPs(perAgent);
-    let currentPermitNonce = await getNonce(account.address);
-
-    for (let i = 0; i < ips.length; i++) {
-      if (swarmAbort) return;
-      const ip = ips[i];
-      let success = false;
-
-      for (let attempt = 0; attempt < 3 && !success && !swarmAbort; attempt++) {
-        try {
-          const resource = window.location.origin + '/api/threat/' + encodeURIComponent(ip);
-
-          if (attempt > 0) {
-            try { currentPermitNonce = await getNonce(account.address); } catch(e) {}
+  try {
+    await swarm.launch({
+      numAgents: numAgents,
+      requestsPerAgent: perAgent,
+      generateRequests: generateThreatRequests,
+      callbacks: {
+        onStatus: function(msg, isError) {
+          if (isError) {
+            statusEl.className = 'status-msg error';
+            statusEl.textContent = msg;
+          } else {
+            statusEl.className = 'status-msg';
+            statusEl.innerHTML = '<span class="spinner"></span>' + msg;
           }
-
-          const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
-
-          // 1. Sign EIP-2612 permit: approve Permit2 contract
-          const eip2612Signature = await account.signTypedData({
-            domain: permitDomain,
-            types: permitTypes,
-            primaryType: 'Permit',
-            message: {
-              owner: account.address,
-              spender: PERMIT2_ADDRESS,
-              value: BigInt(100),
-              nonce: currentPermitNonce,
-              deadline: deadline,
-            },
-          });
-
-          // 2. Sign Permit2 PermitWitnessTransferFrom
-          const p2Nonce = randomPermit2Nonce();
-          const permit2Signature = await account.signTypedData({
-            domain: permit2Domain,
-            types: permit2Types,
-            primaryType: 'PermitWitnessTransferFrom',
-            message: {
-              permitted: { token: TOKEN_ADDRESS, amount: BigInt(100) },
-              spender: X402_PERMIT2_PROXY,
-              nonce: p2Nonce,
-              deadline: deadline,
-              witness: { to: PAYMENT_ADDRESS, validAfter: BigInt(0) },
-            },
-          });
-
-          const paymentPayload = {
-            x402Version: 2,
-            scheme: 'exact',
-            network: 'eip155:723',
-            resource: { url: resource, description: 'Threat intel query for ' + ip, mimeType: 'application/json' },
-            accepted: {
-              scheme: 'exact',
-              network: 'eip155:723',
-              amount: '100',
-              asset: TOKEN_ADDRESS,
-              payTo: PAYMENT_ADDRESS,
-              maxTimeoutSeconds: 300,
-              extra: { name: 'Stable Coin', version: '1', assetTransferMethod: 'permit2' }
-            },
-            payload: {
-              signature: permit2Signature,
-              permit2Authorization: {
-                permitted: { token: TOKEN_ADDRESS, amount: '100' },
-                from: account.address,
-                spender: X402_PERMIT2_PROXY,
-                nonce: p2Nonce.toString(),
-                deadline: deadline.toString(),
-                witness: { to: PAYMENT_ADDRESS, validAfter: '0' },
-              },
-            },
-            extensions: {
-              eip2612GasSponsoring: {
-                info: {
-                  amount: '100',
-                  deadline: deadline.toString(),
-                  signature: eip2612Signature,
-                },
-              },
-            },
-          };
-          const xPayment = btoa(JSON.stringify(paymentPayload));
-
-          const t0 = Date.now();
-          const res = await fetch('/api/threat/' + encodeURIComponent(ip), {
-            headers: { 'X-Payment': xPayment }
-          });
-          const fetchMs = Date.now() - t0;
-
-          if (!res.ok) {
-            if (attempt < 2) {
-              await new Promise(r => setTimeout(r, 300 * Math.pow(2, attempt)));
-              continue;
-            }
-            const errBody = await res.text().catch(() => '');
-            throw new Error('HTTP ' + res.status + (errBody ? ': ' + errBody.slice(0, 120) : ''));
+        },
+        onAgentLog: function(entry) {
+          if (entry.isError) {
+            logEntry(entry.agentIndex, entry.requestId, entry.message, true);
+          } else {
+            const data = entry.responseData || {};
+            const vMs = data.verify_ms || 0;
+            const sMs = data.settle_ms || 0;
+            const nMs = Math.max(0, (entry.latencyMs || 0) - vMs - sMs);
+            const msg = 'score: ' + data.threat_score + ' (' + (entry.latencyMs || 0) + 'ms: v' + vMs + '/s' + sMs + '/n' + nMs + ') \\u2192 0.0001 SBC';
+            logEntry(entry.agentIndex, entry.requestId, msg, false, entry.txHash);
           }
+        },
+        onStatsUpdate: function(stats) {
+          document.getElementById('statTotal').textContent = stats.totalRequests;
+          document.getElementById('statSpent').textContent = (stats.totalSpentRaw / 1e6).toFixed(4);
+          document.getElementById('statRps').textContent = stats.requestsPerSecond.toFixed(1);
+        },
+        onComplete: function(stats) {
+          statusEl.textContent = 'Swarm complete. ' + stats.totalRequests + ' requests, ' + (stats.totalSpentRaw / 1e6).toFixed(4) + ' SBC spent.';
+          swarm.getBalance(connectedAddress).then(function(bal) {
+            document.getElementById('walletBal').textContent = (Number(bal) / 1e6).toFixed(4) + ' SBC';
+          }).catch(function() {});
+        },
+      },
+      walletClient: window.walletClient,
+      address: connectedAddress,
+    });
+  } catch (err) {
+    statusEl.className = 'status-msg error';
+    statusEl.textContent = err.message;
+    console.error(err);
+  }
 
-          const data = await res.json();
-
-          currentPermitNonce = currentPermitNonce + BigInt(1);
-          success = true;
-
-          totalReqs++;
-          totalSpent += 100;
-          updateStats();
-          const vMs = data.verify_ms || 0;
-          const sMs = data.settle_ms || 0;
-          const nMs = Math.max(0, fetchMs - vMs - sMs);
-          log(agentIdx, ip, 'score: ' + data.threat_score + ' (' + fetchMs + 'ms: v' + vMs + '/s' + sMs + '/n' + nMs + ') \\u2192 0.0001 SBC', false, data.tx_hash);
-        } catch (err) {
-          if (attempt >= 2) {
-            log(agentIdx, ip, err.message, true);
-            try { currentNonce = await getNonce(account.address); } catch(e) {}
-          }
-        }
-      }
-    }
-  };
-
-  const promises = agents.map((agent, idx) =>
-    agentWork(agent, idx)
-  );
-  await Promise.all(promises);
-
-  swarmRunning = false;
   document.getElementById('swarmBtn').style.display = '';
   document.getElementById('swarmStop').style.display = 'none';
-  if (!swarmAbort) {
-    statusEl.textContent = 'Swarm complete. ' + totalReqs + ' requests, ' + (totalSpent / 1e6).toFixed(4) + ' SBC spent.';
-    try {
-      const bal = await getBalance(connectedAddress);
-      document.getElementById('walletBal').textContent = (Number(bal) / 1e6).toFixed(4) + ' SBC';
-    } catch(e) {}
-  }
 };
 
-async function waitForTx(txHash) {
-  for (let i = 0; i < 60; i++) {
-    const receipt = await publicClient.getTransactionReceipt({ hash: txHash }).catch(() => null);
-    if (receipt) {
-      if (receipt.status === 'reverted') {
-        const err = new Error('Transaction reverted (' + txHash.slice(0, 10) + '...)');
-        err.txHash = txHash;
-        throw err;
-      }
-      return receipt;
-    }
-    await new Promise(r => setTimeout(r, 1000));
-  }
-  throw new Error('Transaction not confirmed after 60s');
-}
-
 window.stopSwarm = function() {
-  swarmAbort = true;
-  document.getElementById('swarmStatus').textContent = 'Stopping...';
+  swarm.stop();
   document.getElementById('swarmBtn').style.display = '';
   document.getElementById('swarmStop').style.display = 'none';
 };

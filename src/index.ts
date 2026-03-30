@@ -1,4 +1,5 @@
 import { getFrontendHtml } from './frontend';
+import { getSwarmModuleJs } from './swarm';
 import { type X402Config, processPayment, corsHeaders, jsonResponse } from './x402';
 
 interface Env {
@@ -8,7 +9,7 @@ interface Env {
 
 const x402Config = (env: Env): X402Config => ({
   asset: '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb',
-  network: 'eip155:723',
+  network: 'eip155:723487',
   payTo: env.PAYMENT_ADDRESS,
   facilitatorUrl: 'https://facilitator.andrs.dev',
   facilitatorApiKey: env.FACILITATOR_API_KEY,
@@ -91,6 +92,13 @@ export default {
     // Health check
     if (url.pathname === '/api/health') {
       return jsonResponse({ status: 'ok' }, 200, config);
+    }
+
+    // Swarm module (reusable browser-side agent orchestration)
+    if (url.pathname === '/modules/swarm.js') {
+      return new Response(getSwarmModuleJs(), {
+        headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
+      });
     }
 
     // Threat intel endpoint

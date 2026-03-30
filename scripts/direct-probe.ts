@@ -22,7 +22,7 @@ const FACILITATOR_URL = process.env.FACILITATOR_URL || 'https://facilitator.andr
 const PAYMENT_ADDRESS = process.env.PAYMENT_ADDRESS || '0xDA60059faBf3e71338c27C505CED519f55d605DD';
 
 const radius = defineChain({
-  id: 723,
+  id: 723487,
   name: 'Radius',
   nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
   rpcUrls: { default: { http: [RADIUS_RPC] } },
@@ -31,7 +31,7 @@ const radius = defineChain({
 const permitDomain = {
   name: 'Stable Coin',
   version: '1',
-  chainId: 723,
+  chainId: 723487,
   verifyingContract: SBC_TOKEN as `0x${string}`,
 };
 
@@ -118,7 +118,7 @@ async function main() {
         tokenAddress: SBC_TOKEN,
         amount: '100',
         recipient: PAYMENT_ADDRESS,
-        network: 'eip155:723',
+        network: 'eip155:723487',
       },
       signature,
     });

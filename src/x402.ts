@@ -17,7 +17,7 @@
 export interface X402Config {
   /** ERC-20 token contract address */
   asset: string;
-  /** Chain identifier, e.g. "eip155:723" (Radius) */
+  /** Chain identifier, e.g. "eip155:723487" (Radius) */
   network: string;
   /** Wallet address that receives payments */
   payTo: string;

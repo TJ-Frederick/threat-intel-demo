@@ -27,7 +27,7 @@ const RADIUS_RPC = 'https://rpc.radiustech.xyz/cebu04iqsbb2xhuklnlnj68amqfukg8ay
 const SBC_TOKEN = '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb' as const;
 
 const radius = defineChain({
-  id: 723,
+  id: 723487,
   name: 'Radius',
   nativeCurrency: { name: 'RUSD', symbol: 'RUSD', decimals: 18 },
   rpcUrls: { default: { http: [RADIUS_RPC] } },
