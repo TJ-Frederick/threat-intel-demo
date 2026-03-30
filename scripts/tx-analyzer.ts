@@ -16,7 +16,7 @@ import { createPublicClient, http, defineChain } from 'viem';
 const RADIUS_RPC = 'https://rpc.radiustech.xyz/cebu04iqsbb2xhuklnlnj68amqfukg8ayl32tuwga9ldsuf2';
 
 const radius = defineChain({
-  id: 723,
+  id: 723487,
   name: 'Radius',
   nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
   rpcUrls: { default: { http: [RADIUS_RPC] } },
