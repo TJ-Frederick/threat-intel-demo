@@ -5,3 +5,5 @@ dist/
 .env
 *.abi
 .claude/
+cache/
+out/

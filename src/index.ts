@@ -1,20 +1,22 @@
 import { getFrontendHtml } from './frontend';
+import {
+  getNetworkKeyFromUrl,
+  getPublicNetworkConfigs,
+  getWorkerNetworkConfigs,
+  toX402Config,
+  type Env,
+  type NetworkKey,
+  type WorkerNetworkConfig,
+} from './network-config';
 import { getSwarmModuleJs } from './swarm';
-import { type X402Config, processPayment, corsHeaders, jsonResponse } from './x402';
+import { processPayment, corsHeaders, jsonResponse } from './x402';
 
-interface Env {
-  PAYMENT_ADDRESS: string;
-  FACILITATOR_API_KEY?: string;
-}
-
-const x402Config = (env: Env): X402Config => ({
-  asset: '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb',
-  network: 'eip155:723487',
-  payTo: env.PAYMENT_ADDRESS,
-  facilitatorUrl: 'https://facilitator.andrs.dev',
-  facilitatorApiKey: env.FACILITATOR_API_KEY,
-  amount: '100', // 0.0001 SBC (6 decimals)
-});
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#f6821f"/>
+  <path d="M32 14L18 24v12l14 16 14-16V24L32 14z" fill="#fff" opacity="0.96"/>
+  <path d="M32 14l14 10v12L32 52V14z" fill="#fff" opacity="0.76"/>
+  <circle cx="32" cy="32" r="5.75" fill="#f6821f"/>
+</svg>`;
 
 // Deterministic hash from IP string
 function hashIP(ip: string): number {
@@ -30,7 +32,15 @@ function seededRandom(seed: number, index: number): number {
   return x - Math.floor(x);
 }
 
-function generateThreatData(ip: string, settlementMs: number, verifyMs: number, settleMs: number, txHash?: string) {
+function generateThreatData(
+  ip: string,
+  networkKey: NetworkKey,
+  networkConfig: WorkerNetworkConfig,
+  settlementMs: number,
+  verifyMs: number,
+  settleMs: number,
+  txHash?: string,
+) {
   const seed = hashIP(ip);
 
   const categories = ['scanner', 'scraper', 'proxy', 'tor_exit', 'residential', 'datacenter', 'vpn'];
@@ -71,18 +81,26 @@ function generateThreatData(ip: string, settlementMs: number, verifyMs: number, 
     isp,
     first_seen: firstSeen,
     request_cost: '$0.0001',
-    settlement_network: 'Radius',
+    settlement_network: networkConfig.label,
+    settlement_network_key: networkKey,
     settlement_time_ms: settlementMs,
     verify_ms: verifyMs,
     settle_ms: settleMs,
-    ...(txHash ? { tx_hash: txHash } : {}),
+    ...(txHash
+      ? {
+          tx_hash: txHash,
+          tx_explorer_url: `${networkConfig.explorerBaseUrl}/tx/${txHash}`,
+        }
+      : {}),
   };
 }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const config = x402Config(env);
+    const networkKey = getNetworkKeyFromUrl(url);
+    const networkConfig = getWorkerNetworkConfigs(env)[networkKey];
+    const config = toX402Config(networkConfig);
 
     // CORS preflight
     if (request.method === 'OPTIONS') {
@@ -91,13 +109,22 @@ export default {
 
     // Health check
     if (url.pathname === '/api/health') {
-      return jsonResponse({ status: 'ok' }, 200, config);
+      return jsonResponse({ status: 'ok', network: networkKey }, 200, config);
     }
 
     // Swarm module (reusable browser-side agent orchestration)
     if (url.pathname === '/modules/swarm.js') {
       return new Response(getSwarmModuleJs(), {
         headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
+      });
+    }
+
+    if (url.pathname === '/favicon.svg' || url.pathname === '/favicon.ico') {
+      return new Response(FAVICON_SVG, {
+        headers: {
+          'Content-Type': 'image/svg+xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=86400',
+        },
       });
     }
 
@@ -132,11 +159,26 @@ export default {
         case 'settle-unreachable':
           return jsonResponse({ error: 'Facilitator settle unreachable', detail: outcome.detail }, 502, config);
         case 'settle-pending': {
-          const data = generateThreatData(ip, outcome.totalMs, outcome.verifyMs, 0);
+          const data = generateThreatData(
+            ip,
+            networkKey,
+            networkConfig,
+            outcome.totalMs,
+            outcome.verifyMs,
+            0,
+          );
           return jsonResponse(data, 200, config);
         }
         case 'settled': {
-          const data = generateThreatData(ip, outcome.totalMs, outcome.verifyMs, outcome.settleMs, outcome.txHash);
+          const data = generateThreatData(
+            ip,
+            networkKey,
+            networkConfig,
+            outcome.totalMs,
+            outcome.verifyMs,
+            outcome.settleMs,
+            outcome.txHash,
+          );
           return jsonResponse(data, 200, config);
         }
         default: {
@@ -148,7 +190,12 @@ export default {
 
     // Frontend
     if (url.pathname === '/' || url.pathname === '') {
-      return new Response(getFrontendHtml(env.PAYMENT_ADDRESS), {
+      const boot = {
+        defaultNetwork: networkKey,
+        networks: getPublicNetworkConfigs(env),
+      };
+
+      return new Response(getFrontendHtml(boot), {
         headers: { 'Content-Type': 'text/html; charset=utf-8' },
       });
     }
