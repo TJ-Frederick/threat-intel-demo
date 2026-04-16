@@ -35,7 +35,7 @@ import { privateKeyToAccount } from 'https://esm.sh/viem/accounts';
 
 const RADIUS_DEFAULTS = {
   chainId: 723487,
-  chainName: 'Radius',
+  chainName: 'Radius Mainnet',
   tokenAddress: '0x33ad9e4bd16b69b5bfded37d8b5d9ff9aba014fb',
   tokenName: 'Stable Coin',
   tokenVersion: '1',
@@ -43,6 +43,11 @@ const RADIUS_DEFAULTS = {
   permit2Address: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
   x402Permit2Proxy: '0x402085c248EeA27D92E8b30b2C58ed07f9E20001',
   batchContractAddress: '0x71e14b65a8305a9a95a675abccb993f929b53885',
+  rpcUrl: 'https://rpc.radiustech.xyz/cebu04iqsbb2xhuklnlnj68amqfukg8ayl32tuwga9ldsuf2',
+  explorerBaseUrl: 'https://network.radiustech.xyz',
+  nativeCurrencyName: 'RUSD',
+  nativeCurrencySymbol: 'RUSD',
+  nativeCurrencyDecimals: 18,
   amountPerRequest: '100',
   maxRetries: 3,
 };
@@ -240,8 +245,15 @@ export function createSwarm(userConfig) {
   const chain = defineChain({
     id: cfg.chainId,
     name: cfg.chainName,
-    nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+    nativeCurrency: {
+      name: cfg.nativeCurrencyName,
+      symbol: cfg.nativeCurrencySymbol,
+      decimals: cfg.nativeCurrencyDecimals,
+    },
     rpcUrls: { default: { http: [cfg.rpcUrl] } },
+    blockExplorers: {
+      default: { name: cfg.chainName + ' Explorer', url: cfg.explorerBaseUrl },
+    },
   });
 
   const publicClient = createPublicClient({ chain, transport: http(cfg.rpcUrl) });
@@ -369,7 +381,7 @@ export function createSwarm(userConfig) {
                   continue;
                 }
                 const errBody = await res.text().catch(() => '');
-                throw new Error('HTTP ' + res.status + (errBody ? ': ' + errBody.slice(0, 120) : ''));
+                throw new Error('HTTP ' + res.status + (errBody ? ': ' + errBody : ''));
               }
 
               const data = await res.json();

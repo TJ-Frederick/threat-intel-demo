@@ -1,10 +1,28 @@
-export function getFrontendHtml(paymentAddress: string): string {
+import type { NetworkKey, PublicNetworkConfig } from './network-config';
+
+interface FrontendBootData {
+  defaultNetwork: NetworkKey;
+  networks: Record<NetworkKey, PublicNetworkConfig>;
+}
+
+function toInlineJson(data: unknown): string {
+  return JSON.stringify(data)
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+export function getFrontendHtml(boot: FrontendBootData): string {
+  const bootJson = toInlineJson(boot);
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Threat Intel API — Investigate</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -68,6 +86,12 @@ export function getFrontendHtml(paymentAddress: string): string {
     -webkit-font-smoothing: antialiased;
   }
 
+  body[data-network="testnet"] {
+    background:
+      radial-gradient(circle at top left, rgba(148, 163, 184, 0.14), transparent 36%),
+      linear-gradient(180deg, #f3f5f7 0%, #f7f8fa 100%);
+  }
+
   ::selection { background: var(--cf-orange-ring); color: var(--gray-9); }
   a { color: var(--cf-orange); text-decoration: none; }
   a:hover { text-decoration: underline; }
@@ -93,9 +117,19 @@ export function getFrontendHtml(paymentAddress: string): string {
     transition: transform 0.25s ease;
   }
 
+  body[data-network="testnet"] .sidebar {
+    background: linear-gradient(180deg, #eef2f5 0%, #f8fafc 100%);
+    border-right-color: #d7dde5;
+    box-shadow: inset -1px 0 0 rgba(15, 23, 42, 0.03);
+  }
+
   .sidebar-brand {
     padding: 20px 20px 16px;
     border-bottom: 1px solid var(--border);
+  }
+  body[data-network="testnet"] .sidebar-brand,
+  body[data-network="testnet"] .sidebar-footer {
+    border-color: #d7dde5;
   }
   .sidebar-brand .logo-row {
     display: flex;
@@ -147,6 +181,11 @@ export function getFrontendHtml(paymentAddress: string): string {
     font-weight: 600;
     border-left-color: var(--cf-orange);
   }
+  body[data-network="testnet"] .sidebar-nav a.active {
+    background: rgba(100, 116, 139, 0.12);
+    color: #475569;
+    border-left-color: #64748b;
+  }
   .sidebar-nav a svg { flex-shrink: 0; opacity: 0.6; }
   .sidebar-nav a.active svg { opacity: 1; }
 
@@ -171,6 +210,12 @@ export function getFrontendHtml(paymentAddress: string): string {
     background: var(--success);
     flex-shrink: 0;
   }
+  body[data-network="testnet"] .network-indicator {
+    color: #475569;
+  }
+  body[data-network="testnet"] .network-indicator .dot {
+    background: #64748b;
+  }
   .protocol-badge {
     display: inline-flex;
     align-items: center;
@@ -183,6 +228,10 @@ export function getFrontendHtml(paymentAddress: string): string {
     font-weight: 600;
     letter-spacing: 0.02em;
     width: fit-content;
+  }
+  body[data-network="testnet"] .protocol-badge {
+    background: rgba(100, 116, 139, 0.12);
+    color: #475569;
   }
 
   /* ── Main Content ── */
@@ -207,6 +256,12 @@ export function getFrontendHtml(paymentAddress: string): string {
     top: 0;
     z-index: 50;
   }
+  body[data-network="testnet"] .top-bar {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(241,245,249,0.96) 100%);
+    border-bottom-color: #d7dde5;
+    backdrop-filter: blur(10px);
+  }
   .breadcrumb {
     font-size: 13px;
     color: var(--gray-5);
@@ -220,6 +275,45 @@ export function getFrontendHtml(paymentAddress: string): string {
     display: flex;
     align-items: center;
     gap: 12px;
+  }
+
+  .network-toggle {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px;
+    background: var(--gray-1);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    gap: 4px;
+  }
+  body[data-network="testnet"] .network-toggle {
+    background: rgba(148, 163, 184, 0.1);
+    border-color: #cbd5e1;
+  }
+  .network-toggle button {
+    border: none;
+    background: transparent;
+    color: var(--gray-6);
+    border-radius: 999px;
+    padding: 7px 12px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .network-toggle button.active {
+    background: var(--gray-0);
+    color: var(--gray-9);
+    box-shadow: var(--shadow-sm);
+  }
+  body[data-network="testnet"] .network-toggle button.active {
+    background: #ffffff;
+    color: #334155;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  }
+  .network-toggle button:hover:not(.active) {
+    color: var(--gray-8);
   }
 
   .wallet-pill {
@@ -829,6 +923,7 @@ export function getFrontendHtml(paymentAddress: string): string {
 
     /* Top bar: compact wallet + connect */
     .top-bar-right { min-width: 0; gap: 8px; }
+    .network-toggle button { padding: 6px 10px; }
     .wallet-pill .address,
     .wallet-pill .divider { display: none; }
     .wallet-pill { padding: 5px 10px; }
@@ -922,11 +1017,11 @@ export function getFrontendHtml(paymentAddress: string): string {
     </nav>
 
     <div class="sidebar-footer">
-      <div class="network-indicator">
+      <div class="network-indicator" id="networkIndicator">
         <span class="dot"></span>
-        Radius Network
+        Radius Mainnet
       </div>
-      <div class="protocol-badge">
+      <div class="protocol-badge" id="protocolBadge">
         <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 0L0 3v4l5 3 5-3V3L5 0zM5 1.2l3.5 2.1v2.4L5 7.8 1.5 5.7V3.3L5 1.2z"/></svg>
         x402 Protocol
       </div>
@@ -946,6 +1041,10 @@ export function getFrontendHtml(paymentAddress: string): string {
         <div class="breadcrumb">Security &rsaquo; <strong>Investigate</strong></div>
       </div>
       <div class="top-bar-right">
+        <div class="network-toggle" id="networkToggle">
+          <button type="button" data-network="mainnet" onclick="setNetwork('mainnet')">Mainnet</button>
+          <button type="button" data-network="testnet" onclick="setNetwork('testnet')">Testnet</button>
+        </div>
         <div class="wallet-pill" id="walletInfo">
           <span class="status-dot"></span>
           <span class="address" id="walletAddr"></span>
@@ -1084,7 +1183,7 @@ export function getFrontendHtml(paymentAddress: string): string {
         </div>
       </div>
 
-      <div class="page-footer">Powered by Radius Network &middot; x402 Protocol</div>
+      <div class="page-footer" id="pageFooter">Powered by Radius Mainnet &middot; x402 Protocol</div>
     </div>
   </main>
 </div>
@@ -1093,12 +1192,182 @@ export function getFrontendHtml(paymentAddress: string): string {
 import { createSwarm, signX402Payment } from '/modules/swarm.js';
 import { createWalletClient, custom } from 'https://esm.sh/viem';
 
-const PAYMENT_ADDRESS = '${paymentAddress}';
-const RADIUS_RPC = 'https://rpc.radiustech.xyz/cebu04iqsbb2xhuklnlnj68amqfukg8ayl32tuwga9ldsuf2';
-
-const swarm = createSwarm({ paymentAddress: PAYMENT_ADDRESS, rpcUrl: RADIUS_RPC });
-
+const BOOT = ${bootJson};
+const NETWORK_KEY_STORAGE = 'radius-threat-network';
 let connectedAddress = null;
+let walletClient = null;
+let currentNetworkKey = getInitialNetwork();
+let currentConfig = BOOT.networks[currentNetworkKey];
+let swarm = createSwarm(networkToSwarmConfig(currentConfig));
+
+function getInitialNetwork() {
+  const params = new URLSearchParams(window.location.search);
+  const queryValue = params.get('network');
+  if (queryValue && BOOT.networks[queryValue]) return queryValue;
+
+  const storedValue = window.localStorage.getItem(NETWORK_KEY_STORAGE);
+  if (storedValue && BOOT.networks[storedValue]) return storedValue;
+
+  return BOOT.defaultNetwork;
+}
+
+function networkToSwarmConfig(config) {
+  return {
+    paymentAddress: config.paymentAddress,
+    rpcUrl: config.rpcUrl,
+    chainId: config.chainId,
+    chainName: config.chainName,
+    tokenAddress: config.tokenAddress,
+    tokenName: config.tokenName,
+    tokenVersion: config.tokenVersion,
+    tokenDecimals: config.tokenDecimals,
+    permit2Address: config.permit2Address,
+    x402Permit2Proxy: config.x402Permit2Proxy,
+    batchContractAddress: config.batchContractAddress,
+    amountPerRequest: config.amountPerRequest,
+    explorerBaseUrl: config.explorerBaseUrl,
+    nativeCurrencyName: config.nativeCurrency.name,
+    nativeCurrencySymbol: config.nativeCurrency.symbol,
+    nativeCurrencyDecimals: config.nativeCurrency.decimals,
+  };
+}
+
+function errorMessage(err) {
+  if (err && typeof err === 'object' && 'message' in err) {
+    return err.message;
+  }
+  return String(err);
+}
+
+function connectButtonIcon() {
+  return '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M12.136.326A1.5 1.5 0 0 1 14 1.78V3h.5A1.5 1.5 0 0 1 16 4.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 13.5v-9A1.5 1.5 0 0 1 1.5 3H9V1.78a1.5 1.5 0 0 1 1.136-1.454l2-0.5zM11 3h2V1.78l-2 .5V3zM1.5 4a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5h-13zm10 3.5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1z"/></svg>';
+}
+
+function buildApiUrl(path) {
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set('network', currentNetworkKey);
+  return url;
+}
+
+function txUrlForHash(txHash) {
+  return currentConfig.explorerBaseUrl + '/tx/' + txHash;
+}
+
+function clearResults() {
+  document.getElementById('queryResult').classList.remove('visible');
+  document.getElementById('queryStatus').className = 'status-msg';
+  document.getElementById('queryStatus').textContent = '';
+  document.getElementById('resultBadge').innerHTML = '';
+  document.getElementById('resultCostMeta').innerHTML = '';
+  document.getElementById('kvTable').innerHTML = '';
+  document.getElementById('paymentTable').innerHTML = '';
+  document.getElementById('queryJson').innerHTML = '';
+  document.getElementById('curlCmd').textContent = '';
+}
+
+function syncLocationNetwork() {
+  const url = new URL(window.location.href);
+  url.searchParams.set('network', currentNetworkKey);
+  window.history.replaceState({}, '', url.toString());
+}
+
+function updateNetworkUI() {
+  document.body.setAttribute('data-network', currentNetworkKey);
+  document.title = 'Threat Intel API — ' + currentConfig.label;
+  document.getElementById('networkIndicator').innerHTML =
+    '<span class="dot"></span>' + currentConfig.label;
+  document.getElementById('protocolBadge').innerHTML =
+    '<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M5 0L0 3v4l5 3 5-3V3L5 0zM5 1.2l3.5 2.1v2.4L5 7.8 1.5 5.7V3.3L5 1.2z"/></svg>' +
+    (currentNetworkKey === 'testnet' ? 'x402 Testnet' : 'x402 Protocol');
+  document.getElementById('pageFooter').textContent =
+    'Powered by ' + currentConfig.label + ' · x402 Protocol';
+
+  document
+    .querySelectorAll('#networkToggle button[data-network]')
+    .forEach(function(button) {
+      button.classList.toggle('active', button.getAttribute('data-network') === currentNetworkKey);
+    });
+
+  window.updateCost();
+}
+
+function shortAddress(address) {
+  return address.slice(0, 6) + '...' + address.slice(-4);
+}
+
+function setConnectedUi() {
+  const btn = document.getElementById('connectBtn');
+  btn.disabled = false;
+  btn.innerHTML = 'Connected';
+  btn.style.borderColor = 'var(--success)';
+  btn.style.color = 'var(--success)';
+
+  if (connectedAddress) {
+    document.getElementById('walletAddr').textContent = shortAddress(connectedAddress);
+    document.getElementById('walletInfo').classList.add('visible');
+  }
+}
+
+function resetConnectUi() {
+  const btn = document.getElementById('connectBtn');
+  btn.disabled = false;
+  btn.innerHTML = connectButtonIcon() + ' Connect Wallet';
+  btn.style.borderColor = '';
+  btn.style.color = '';
+}
+
+function rebuildSwarm() {
+  if (swarm && swarm.isRunning()) {
+    swarm.stop();
+  }
+  swarm = createSwarm(networkToSwarmConfig(currentConfig));
+}
+
+async function ensureWalletChain() {
+  const chainIdHex = '0x' + currentConfig.chainId.toString(16);
+
+  try {
+    await window.ethereum.request({
+      method: 'wallet_switchEthereumChain',
+      params: [{ chainId: chainIdHex }],
+    });
+  } catch (switchErr) {
+    if (switchErr && switchErr.code === 4902) {
+      await window.ethereum.request({
+        method: 'wallet_addEthereumChain',
+        params: [{
+          chainId: chainIdHex,
+          chainName: currentConfig.chainName,
+          nativeCurrency: currentConfig.nativeCurrency,
+          rpcUrls: [currentConfig.rpcUrl],
+          blockExplorerUrls: [currentConfig.explorerBaseUrl],
+        }],
+      });
+      return;
+    }
+    throw switchErr;
+  }
+}
+
+function syncWalletClient() {
+  walletClient = createWalletClient({
+    chain: swarm.chain,
+    transport: custom(window.ethereum),
+  });
+  window.walletClient = walletClient;
+}
+
+async function refreshBalance() {
+  if (!connectedAddress) return;
+
+  try {
+    const bal = await swarm.getBalance(connectedAddress);
+    document.getElementById('walletBal').textContent =
+      (Number(bal) / Math.pow(10, currentConfig.tokenDecimals)).toFixed(4) + ' SBC';
+  } catch (err) {
+    document.getElementById('walletBal').textContent = '— SBC';
+  }
+}
 
 // ── Sidebar / Nav ──
 
@@ -1114,7 +1383,7 @@ window.navTo = function(e, section) {
   e.currentTarget.classList.add('active');
   const el = document.getElementById(section);
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  closeSidebar();
+  window.closeSidebar();
 };
 
 // ── Collapsible sections ──
@@ -1166,13 +1435,14 @@ function renderStructuredResult(data) {
   const score = data.threat_score;
   const level = threatLevel(score);
   const color = threatColor(score);
+  const txUrl = data.tx_explorer_url || (data.tx_hash ? txUrlForHash(data.tx_hash) : null);
 
   // Badge
   document.getElementById('resultBadge').innerHTML =
     '<span class="threat-badge ' + level + '">' + score + '/100 &middot; ' + threatLabel(score) + '</span>';
 
   // Cost meta + tx link
-  const txLinkHtml = data.tx_hash ? '<a href="https://network.radiustech.xyz/tx/' + data.tx_hash + '" target="_blank" style="color:var(--cf-orange);text-decoration:none;font-family:JetBrains Mono,monospace;font-size:11px;">' + data.tx_hash.slice(0, 10) + '...' + data.tx_hash.slice(-6) + ' &#8599;</a> &middot; ' : '';
+  const txLinkHtml = txUrl ? '<a href="' + txUrl + '" target="_blank" style="color:var(--cf-orange);text-decoration:none;font-family:JetBrains Mono,monospace;font-size:11px;">' + data.tx_hash.slice(0, 10) + '...' + data.tx_hash.slice(-6) + ' &#8599;</a> &middot; ' : '';
   document.getElementById('resultCostMeta').innerHTML =
     txLinkHtml + '<span style="color:var(--gray-5);font-size:11px;">' + data.request_cost + '</span>';
 
@@ -1206,7 +1476,7 @@ function renderStructuredResult(data) {
   document.getElementById('paymentTable').innerHTML =
     '<tr><td>Cost</td><td>' + data.request_cost + '</td></tr>' +
     '<tr><td>Settlement network</td><td>' + data.settlement_network + '</td></tr>' +
-    (data.tx_hash ? '<tr><td>Transaction</td><td><a href="https://network.radiustech.xyz/tx/' + data.tx_hash + '" target="_blank" style="color:var(--cf-orange);text-decoration:none;">' + data.tx_hash.slice(0, 10) + '...' + data.tx_hash.slice(-8) + ' &#8599;</a></td></tr>' : '') +
+    (txUrl ? '<tr><td>Transaction</td><td><a href="' + txUrl + '" target="_blank" style="color:var(--cf-orange);text-decoration:none;">' + data.tx_hash.slice(0, 10) + '...' + data.tx_hash.slice(-8) + ' &#8599;</a></td></tr>' : '') +
     '<tr><td>Protocol</td><td><span class="protocol-badge" style="font-size:10px;"><svg width="8" height="8" viewBox="0 0 10 10" fill="currentColor"><path d="M5 0L0 3v4l5 3 5-3V3L5 0zM5 1.2l3.5 2.1v2.4L5 7.8 1.5 5.7V3.3L5 1.2z"/></svg>x402 v2</span></td></tr>';
 }
 
@@ -1219,54 +1489,58 @@ window.connectWallet = async function() {
   try {
     const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
     connectedAddress = accounts[0];
-
-    const chainIdHex = '0x' + swarm.config.chainId.toString(16);
-    try {
-      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainIdHex }] });
-    } catch (switchErr) {
-      if (switchErr.code === 4902) {
-        await window.ethereum.request({
-          method: 'wallet_addEthereumChain',
-          params: [{
-            chainId: chainIdHex,
-            chainName: swarm.config.chainName,
-            nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
-            rpcUrls: [swarm.config.rpcUrl],
-          }]
-        });
-      }
-    }
-
-    window.walletClient = createWalletClient({
-      chain: swarm.chain,
-      transport: custom(window.ethereum),
-    });
-
-    const short = connectedAddress.slice(0, 6) + '...' + connectedAddress.slice(-4);
-    document.getElementById('walletAddr').textContent = short;
-    document.getElementById('walletInfo').classList.add('visible');
-    btn.innerHTML = 'Connected';
-    btn.style.borderColor = 'var(--success)';
-    btn.style.color = 'var(--success)';
-
-    try {
-      const bal = await swarm.getBalance(connectedAddress);
-      const formatted = (Number(bal) / 1e6).toFixed(4);
-      document.getElementById('walletBal').textContent = formatted + ' SBC';
-    } catch (e) {
-      document.getElementById('walletBal').textContent = '— SBC';
-    }
+    await ensureWalletChain();
+    syncWalletClient();
+    setConnectedUi();
+    await refreshBalance();
   } catch (err) {
-    btn.disabled = false;
-    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M12.136.326A1.5 1.5 0 0 1 14 1.78V3h.5A1.5 1.5 0 0 1 16 4.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 0 13.5v-9A1.5 1.5 0 0 1 1.5 3H9V1.78a1.5 1.5 0 0 1 1.136-1.454l2-0.5zM11 3h2V1.78l-2 .5V3zM1.5 4a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-9a.5.5 0 0 0-.5-.5h-13zm10 3.5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1z"/></svg> Connect Wallet';
+    resetConnectUi();
     console.error(err);
+  }
+};
+
+window.setNetwork = async function(networkKey) {
+  if (!BOOT.networks[networkKey] || networkKey === currentNetworkKey) return;
+
+  currentNetworkKey = networkKey;
+  currentConfig = BOOT.networks[currentNetworkKey];
+  window.localStorage.setItem(NETWORK_KEY_STORAGE, currentNetworkKey);
+  syncLocationNetwork();
+  clearResults();
+
+  document.getElementById('swarmStatus').className = 'status-msg';
+  document.getElementById('swarmStatus').textContent = '';
+  document.getElementById('swarmLog').innerHTML = '';
+  document.getElementById('swarmStats').classList.remove('visible');
+  document.getElementById('swarmLog').classList.remove('visible');
+  document.getElementById('statTotal').textContent = '0';
+  document.getElementById('statSpent').textContent = '0';
+  document.getElementById('statRps').textContent = '0';
+
+  rebuildSwarm();
+  updateNetworkUI();
+
+  if (connectedAddress && window.ethereum) {
+    try {
+      await ensureWalletChain();
+      syncWalletClient();
+      setConnectedUi();
+      await refreshBalance();
+    } catch (err) {
+      const statusEl = document.getElementById('queryStatus');
+      statusEl.className = 'status-msg error';
+      statusEl.textContent = 'Wallet remains connected, but switching MetaMask to ' + currentConfig.label + ' failed: ' + errorMessage(err);
+    }
   }
 };
 
 // ── Manual Query ──
 
 window.runQuery = async function() {
-  if (!connectedAddress) { connectWallet(); return; }
+  if (!connectedAddress) {
+    await window.connectWallet();
+    if (!connectedAddress) return;
+  }
   const ip = document.getElementById('ipInput').value.trim();
   if (!ip) return;
   const statusEl = document.getElementById('queryStatus');
@@ -1279,9 +1553,10 @@ window.runQuery = async function() {
 
   const t0 = Date.now();
   try {
-    const resource = window.location.origin + '/api/threat/' + encodeURIComponent(ip);
+    const resourceUrl = buildApiUrl('/api/threat/' + encodeURIComponent(ip));
+    const resource = resourceUrl.toString();
 
-    const res402 = await fetch('/api/threat/' + encodeURIComponent(ip));
+    const res402 = await fetch(resource);
     if (res402.status !== 402) throw new Error('Expected 402, got ' + res402.status);
     const body402 = await res402.json();
     const req = body402.paymentRequirements[0];
@@ -1291,7 +1566,7 @@ window.runQuery = async function() {
     const permitNonce = await swarm.getNonce(connectedAddress);
 
     const { xPayment } = await signX402Payment({
-      signTypedData: (params) => window.walletClient.signTypedData({ account: connectedAddress, ...params }),
+      signTypedData: (params) => walletClient.signTypedData({ account: connectedAddress, ...params }),
       owner: connectedAddress,
       permitNonce: permitNonce,
       resource: { url: resource, description: 'Threat intel query for ' + ip, mimeType: 'application/json' },
@@ -1301,7 +1576,7 @@ window.runQuery = async function() {
 
     statusEl.innerHTML = '<span class="spinner"></span>Settling payment...';
 
-    const res = await fetch('/api/threat/' + encodeURIComponent(ip), {
+    const res = await fetch(resource, {
       headers: { 'X-Payment': xPayment }
     });
     if (!res.ok) {
@@ -1309,7 +1584,6 @@ window.runQuery = async function() {
       throw new Error('Payment failed (' + res.status + '): ' + errText);
     }
     const data = await res.json();
-    const elapsed = Date.now() - t0;
 
     // Render structured result
     renderStructuredResult(data);
@@ -1325,14 +1599,11 @@ window.runQuery = async function() {
     statusEl.textContent = '';
 
     // Refresh balance
-    try {
-      const bal = await swarm.getBalance(connectedAddress);
-      document.getElementById('walletBal').textContent = (Number(bal) / 1e6).toFixed(4) + ' SBC';
-    } catch(e) {}
+    await refreshBalance();
 
   } catch (err) {
     statusEl.className = 'status-msg error';
-    statusEl.textContent = err.message;
+    statusEl.textContent = errorMessage(err);
     console.error(err);
   } finally {
     queryBtn.disabled = false;
@@ -1366,7 +1637,7 @@ function randomIPs(count) {
 function generateThreatRequests(agentIndex, count) {
   return randomIPs(count).map(function(ip) {
     return {
-      url: window.location.origin + '/api/threat/' + encodeURIComponent(ip),
+      url: buildApiUrl('/api/threat/' + encodeURIComponent(ip)).toString(),
       description: ip,
       mimeType: 'application/json',
     };
@@ -1391,7 +1662,10 @@ window.updateCost = function() {
 };
 
 window.launchSwarm = async function() {
-  if (!connectedAddress) { connectWallet(); return; }
+  if (!connectedAddress) {
+    await window.connectWallet();
+    if (!connectedAddress) return;
+  }
   const numAgents = parseInt(document.getElementById('swarmAgents').value) || 10;
   const perAgent = parseInt(document.getElementById('swarmCount').value) || 2;
   const statusEl = document.getElementById('swarmStatus');
@@ -1407,7 +1681,7 @@ window.launchSwarm = async function() {
     const el = document.getElementById('swarmLog');
     const entry = document.createElement('div');
     entry.className = 'entry';
-    const txCol = txHash ? '<a class="tx-col" href="https://network.radiustech.xyz/tx/' + txHash + '" target="_blank" style="color:var(--cf-orange);text-decoration:none;">tx &#8599;</a>' : (isError ? '' : '<span class="tx-col"></span>');
+    const txCol = txHash ? '<a class="tx-col" href="' + txUrlForHash(txHash) + '" target="_blank" style="color:var(--cf-orange);text-decoration:none;">tx &#8599;</a>' : (isError ? '' : '<span class="tx-col"></span>');
     entry.innerHTML = '<span class="agent-tag">Agent ' + (agentIdx+1) + '</span> <span style="color:var(--gray-5)">' + id + '</span> <span class="msg ' + (isError ? 'err' : 'ok') + '">' + msg + '</span>' + txCol;
     el.appendChild(entry);
     el.scrollTop = el.scrollHeight;
@@ -1447,17 +1721,15 @@ window.launchSwarm = async function() {
         },
         onComplete: function(stats) {
           statusEl.textContent = 'Swarm complete. ' + stats.totalRequests + ' requests, ' + (stats.totalSpentRaw / 1e6).toFixed(4) + ' SBC spent.';
-          swarm.getBalance(connectedAddress).then(function(bal) {
-            document.getElementById('walletBal').textContent = (Number(bal) / 1e6).toFixed(4) + ' SBC';
-          }).catch(function() {});
+          refreshBalance().catch(function() {});
         },
       },
-      walletClient: window.walletClient,
+      walletClient: walletClient,
       address: connectedAddress,
     });
   } catch (err) {
     statusEl.className = 'status-msg error';
-    statusEl.textContent = err.message;
+    statusEl.textContent = errorMessage(err);
     console.error(err);
   }
 
@@ -1485,6 +1757,10 @@ function syntaxHighlight(obj) {
     return '<span class="' + cls + '">' + match + '</span>';
   });
 }
+
+syncLocationNetwork();
+updateNetworkUI();
+resetConnectUi();
 </script>
 </body>
 </html>`;

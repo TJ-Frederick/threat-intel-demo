@@ -17,11 +17,11 @@
 export interface X402Config {
   /** ERC-20 token contract address */
   asset: string;
-  /** Chain identifier, e.g. "eip155:723487" (Radius) */
+  /** Chain identifier, e.g. "eip155:72344" */
   network: string;
   /** Wallet address that receives payments */
   payTo: string;
-  /** Facilitator service base URL (e.g. "https://facilitator.andrs.dev") */
+  /** Facilitator service base URL */
   facilitatorUrl: string;
   /** Payment amount in raw token units (e.g. "100" = 0.0001 with 6 decimals) */
   amount: string;
@@ -85,6 +85,17 @@ export type PaymentOutcome =
       totalMs: number;
     };
 
+interface FacilitatorResponseDetails {
+  ok: boolean;
+  status: number;
+  statusText: string;
+  url: string;
+  contentType: string | null;
+  data: any | null;
+  text: string;
+  parseError?: string;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Build the 402 response body describing what payment the server accepts (x402 v2). */
@@ -131,6 +142,61 @@ export function jsonResponse(
     status,
     headers: { ...corsHeaders(config), 'Content-Type': 'application/json' },
   });
+}
+
+async function readFacilitatorResponse(res: Response): Promise<FacilitatorResponseDetails> {
+  const text = await res.text();
+  const contentType = res.headers.get('content-type');
+
+  if (!text) {
+    return {
+      ok: res.ok,
+      status: res.status,
+      statusText: res.statusText,
+      url: res.url,
+      contentType,
+      data: null,
+      text: '',
+    };
+  }
+
+  try {
+    return {
+      ok: res.ok,
+      status: res.status,
+      statusText: res.statusText,
+      url: res.url,
+      contentType,
+      data: JSON.parse(text),
+      text,
+    };
+  } catch (error: any) {
+    return {
+      ok: res.ok,
+      status: res.status,
+      statusText: res.statusText,
+      url: res.url,
+      contentType,
+      data: null,
+      text,
+      parseError: error?.message ?? String(error),
+    };
+  }
+}
+
+function logFacilitatorFailure(
+  phase: 'verify' | 'settle',
+  config: X402Config,
+  details: FacilitatorResponseDetails,
+) {
+  console.error(
+    JSON.stringify({
+      event: `facilitator_${phase}_failure`,
+      facilitatorUrl: config.facilitatorUrl,
+      network: config.network,
+      upstream: details,
+    }),
+  );
 }
 
 // ─── Core ────────────────────────────────────────────────────────────────────
@@ -216,8 +282,21 @@ export async function processPayment(
     }
     verifyMs = Date.now() - t0;
 
-    const verifyData: any = await verifyRes.json();
+    const verifyDetails = await readFacilitatorResponse(verifyRes);
+    if (!verifyDetails.data) {
+      logFacilitatorFailure('verify', config, verifyDetails);
+      return {
+        status: 'verify-failed',
+        detail: {
+          error: 'Facilitator returned a non-JSON verify response',
+          ...verifyDetails,
+        },
+      };
+    }
+
+    const verifyData: any = verifyDetails.data;
     if (!verifyData.isValid) {
+      logFacilitatorFailure('verify', config, verifyDetails);
       return { status: 'verify-failed', detail: verifyData };
     }
   }
@@ -225,8 +304,22 @@ export async function processPayment(
   // Step 5a: Async settle — fire-and-forget, return immediately
   if (options?.asyncSettle) {
     const settlePromise = fetch(`${config.facilitatorUrl}/settle`, settleOpts)
-      .then((r) => r.json())
-      .catch(() => {});
+      .then(async (res) => {
+        const settleDetails = await readFacilitatorResponse(res);
+        if (!settleDetails.ok || !settleDetails.data?.success) {
+          logFacilitatorFailure('settle', config, settleDetails);
+        }
+      })
+      .catch((error: any) => {
+        console.error(
+          JSON.stringify({
+            event: 'facilitator_settle_unreachable',
+            facilitatorUrl: config.facilitatorUrl,
+            network: config.network,
+            error: error?.message ?? String(error),
+          }),
+        );
+      });
     if (ctx) ctx.waitUntil(settlePromise);
 
     return {
@@ -246,8 +339,21 @@ export async function processPayment(
   }
   const settleMs = Date.now() - t1;
 
-  const settleData: any = await settleRes.json();
+  const settleDetails = await readFacilitatorResponse(settleRes);
+  if (!settleDetails.data) {
+    logFacilitatorFailure('settle', config, settleDetails);
+    return {
+      status: 'settle-failed',
+      detail: {
+        error: 'Facilitator returned a non-JSON settle response',
+        ...settleDetails,
+      },
+    };
+  }
+
+  const settleData: any = settleDetails.data;
   if (!settleData.success) {
+    logFacilitatorFailure('settle', config, settleDetails);
     return { status: 'settle-failed', detail: settleData };
   }
 
