@@ -1,15 +1,16 @@
+import { createHandle, syncPolicy } from '@radiustech/platform-sdk';
+export { RadiusCounter } from '@radiustech/platform-sdk/limiters/do';
+
 import { getFrontendHtml } from './frontend';
 import {
   getNetworkKeyFromUrl,
   getPublicNetworkConfigs,
-  getWorkerNetworkConfigs,
-  toX402Config,
   type Env,
   type NetworkKey,
-  type WorkerNetworkConfig,
+  type PublicNetworkConfig,
 } from './network-config';
 import { getSwarmModuleJs } from './swarm';
-import { processPayment, corsHeaders, jsonResponse } from './x402';
+import { corsHeaders, decodePaymentResponse, jsonResponse, withCors } from './http';
 
 const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="14" fill="#f6821f"/>
@@ -32,15 +33,8 @@ function seededRandom(seed: number, index: number): number {
   return x - Math.floor(x);
 }
 
-function generateThreatData(
-  ip: string,
-  networkKey: NetworkKey,
-  networkConfig: WorkerNetworkConfig,
-  settlementMs: number,
-  verifyMs: number,
-  settleMs: number,
-  txHash?: string,
-) {
+/** The threat report itself. Payment details are added after the gate settles (see addReceipt). */
+function generateThreatData(ip: string, networkKey: NetworkKey, networkConfig: PublicNetworkConfig) {
   const seed = hashIP(ip);
 
   const categories = ['scanner', 'scraper', 'proxy', 'tor_exit', 'residential', 'datacenter', 'vpn'];
@@ -83,123 +77,146 @@ function generateThreatData(
     request_cost: '$0.0001',
     settlement_network: networkConfig.label,
     settlement_network_key: networkKey,
-    settlement_time_ms: settlementMs,
-    verify_ms: verifyMs,
-    settle_ms: settleMs,
-    ...(txHash
-      ? {
-          tx_hash: txHash,
-          tx_explorer_url: `${networkConfig.explorerBaseUrl}/tx/${txHash}`,
-        }
-      : {}),
   };
+}
+
+/** Which Radius Platform project enforces payments for a network. */
+function projectIdFor(env: Env, networkKey: NetworkKey): string | undefined {
+  return networkKey === 'testnet' ? env.RADIUS_PROJECT_ID_TESTNET : env.RADIUS_PROJECT_ID_MAINNET;
+}
+
+/** The gate: decides each request under the selected project's policy (free, 402, verify, settle). */
+// noPolicy: 'deny' — until the first policy sync lands, answer 503 rather than serve paid
+// routes for free (the SDK's default is to allow).
+const gate = createHandle<Env>({ noPolicy: 'deny' });
+
+/**
+ * The gate settles *after* our handler has produced the body, so the transaction hash and timings
+ * can only be known here. To keep the response shape the frontend already renders, they are
+ * merged back into the JSON body.
+ */
+async function addReceipt(
+  response: Response,
+  networkConfig: PublicNetworkConfig,
+  timings: { verifyMs: number; settleMs: number; totalMs: number },
+): Promise<Response> {
+  const settlement = decodePaymentResponse(response.headers.get('PAYMENT-RESPONSE'));
+  if (response.status !== 200 || !settlement?.success) return response;
+
+  const data = await response.json<Record<string, unknown>>();
+  const txHash = settlement.transaction;
+  const merged = {
+    ...data,
+    settlement_time_ms: timings.totalMs,
+    verify_ms: timings.verifyMs,
+    settle_ms: timings.settleMs,
+    ...(txHash ? { tx_hash: txHash, tx_explorer_url: `${networkConfig.explorerBaseUrl}/tx/${txHash}` } : {}),
+  };
+  const headers = new Headers(response.headers);
+  headers.delete('content-length');
+  return new Response(JSON.stringify(merged), { status: 200, headers });
 }
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const networkKey = getNetworkKeyFromUrl(url);
-    const networkConfig = getWorkerNetworkConfigs(env)[networkKey];
-    const config = toX402Config(networkConfig);
+    const networkConfig = getPublicNetworkConfigs(env)[networkKey];
 
     // CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(config) });
+      return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    // Health check
-    if (url.pathname === '/api/health') {
-      return jsonResponse({ status: 'ok', network: networkKey }, 200, config);
+    const projectId = projectIdFor(env, networkKey);
+    if (!projectId) {
+      return jsonResponse({ error: `No Radius project configured for ${networkKey}` }, 500);
     }
 
-    // Swarm module (reusable browser-side agent orchestration)
-    if (url.pathname === '/modules/swarm.js') {
-      return new Response(getSwarmModuleJs(), {
-        headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
-      });
+    // Point the gate at this network's project. Everything else (API key, KV, limiter) is shared.
+    const gateEnv: Env = { ...env, RADIUS_PROJECT_ID: projectId };
+
+    const started = Date.now();
+    let handlerStarted = 0;
+    let handlerFinished = 0;
+
+    const response = await gate(
+      request,
+      gateEnv,
+      async (forwarded) => {
+        handlerStarted = Date.now();
+        const res = await route(forwarded, env, networkKey, networkConfig);
+        handlerFinished = Date.now();
+        return res;
+      },
+      ctx,
+    );
+
+    const finished = Date.now();
+    const timings = {
+      verifyMs: handlerStarted ? handlerStarted - started : 0,
+      settleMs: handlerFinished ? finished - handlerFinished : 0,
+      totalMs: finished - started,
+    };
+
+    return withCors(await addReceipt(response, networkConfig, timings));
+  },
+
+  /** Cron: keep both projects' policies synced into KV. */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    for (const key of ['testnet', 'mainnet'] as const) {
+      const projectId = projectIdFor(env, key);
+      if (projectId) ctx.waitUntil(syncPolicy({ ...env, RADIUS_PROJECT_ID: projectId }));
     }
-
-    if (url.pathname === '/favicon.svg' || url.pathname === '/favicon.ico') {
-      return new Response(FAVICON_SVG, {
-        headers: {
-          'Content-Type': 'image/svg+xml; charset=utf-8',
-          'Cache-Control': 'public, max-age=86400',
-        },
-      });
-    }
-
-    // Threat intel endpoint
-    const threatMatch = url.pathname.match(/^\/api\/threat\/(.+)$/);
-    if (threatMatch) {
-      const ip = decodeURIComponent(threatMatch[1]);
-
-      const outcome = await processPayment(
-        config,
-        request,
-        url.toString(),
-        `Threat intel query for ${ip}`,
-        {
-          skipVerify: url.searchParams.get('fast') === '1',
-          asyncSettle: url.searchParams.get('async') === '1',
-        },
-        ctx,
-      );
-
-      switch (outcome.status) {
-        case 'no-payment':
-          return jsonResponse(outcome.requirements, 402, config);
-        case 'invalid-header':
-          return jsonResponse({ error: 'Invalid X-Payment header' }, 400, config);
-        case 'verify-failed':
-          return jsonResponse({ error: 'Payment verification failed', detail: outcome.detail }, 402, config);
-        case 'verify-unreachable':
-          return jsonResponse({ error: 'Facilitator verify unreachable', detail: outcome.detail }, 502, config);
-        case 'settle-failed':
-          return jsonResponse({ error: 'Payment settlement failed', detail: outcome.detail }, 402, config);
-        case 'settle-unreachable':
-          return jsonResponse({ error: 'Facilitator settle unreachable', detail: outcome.detail }, 502, config);
-        case 'settle-pending': {
-          const data = generateThreatData(
-            ip,
-            networkKey,
-            networkConfig,
-            outcome.totalMs,
-            outcome.verifyMs,
-            0,
-          );
-          return jsonResponse(data, 200, config);
-        }
-        case 'settled': {
-          const data = generateThreatData(
-            ip,
-            networkKey,
-            networkConfig,
-            outcome.totalMs,
-            outcome.verifyMs,
-            outcome.settleMs,
-            outcome.txHash,
-          );
-          return jsonResponse(data, 200, config);
-        }
-        default: {
-          const _exhaustive: never = outcome;
-          return jsonResponse({ error: 'Unexpected payment state' }, 500, config);
-        }
-      }
-    }
-
-    // Frontend
-    if (url.pathname === '/' || url.pathname === '') {
-      const boot = {
-        defaultNetwork: networkKey,
-        networks: getPublicNetworkConfigs(env),
-      };
-
-      return new Response(getFrontendHtml(boot), {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      });
-    }
-
-    return jsonResponse({ error: 'Not found' }, 404, config);
   },
 };
+
+/** The app's own routes. Payment is already handled by the gate before these run. */
+async function route(
+  request: Request,
+  env: Env,
+  networkKey: NetworkKey,
+  networkConfig: PublicNetworkConfig,
+): Promise<Response> {
+  const url = new URL(request.url);
+
+  if (url.pathname === '/api/health') {
+    return jsonResponse({ status: 'ok', network: networkKey });
+  }
+
+  // Swarm module (reusable browser-side agent orchestration)
+  if (url.pathname === '/modules/swarm.js') {
+    return new Response(getSwarmModuleJs(), {
+      headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
+    });
+  }
+
+  if (url.pathname === '/favicon.svg' || url.pathname === '/favicon.ico') {
+    return new Response(FAVICON_SVG, {
+      headers: {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Cache-Control': 'public, max-age=86400',
+      },
+    });
+  }
+
+  // Threat intel endpoint: charged $0.0001 by the Radius Platform policy.
+  const threatMatch = url.pathname.match(/^\/api\/threat\/(.+)$/);
+  if (threatMatch) {
+    const ip = decodeURIComponent(threatMatch[1]);
+    return jsonResponse(generateThreatData(ip, networkKey, networkConfig));
+  }
+
+  // Frontend
+  if (url.pathname === '/' || url.pathname === '') {
+    const boot = {
+      defaultNetwork: networkKey,
+      networks: getPublicNetworkConfigs(env),
+    };
+    return new Response(getFrontendHtml(boot), {
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+
+  return jsonResponse({ error: 'Not found' }, 404);
+}
