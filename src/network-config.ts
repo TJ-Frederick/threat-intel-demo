@@ -1,4 +1,4 @@
-import { type X402Config } from './x402';
+import type { RadiusEnv } from '@radiustech/platform-sdk';
 
 export type NetworkKey = 'mainnet' | 'testnet';
 
@@ -10,7 +10,6 @@ export interface PublicNetworkConfig {
   network: string;
   rpcUrl: string;
   explorerBaseUrl: string;
-  facilitatorUrl: string;
   paymentAddress: string;
   tokenAddress: string;
   tokenName: string;
@@ -27,17 +26,14 @@ export interface PublicNetworkConfig {
   };
 }
 
-export interface WorkerNetworkConfig extends PublicNetworkConfig {
-  facilitatorApiKey?: string;
-}
-
-export interface Env {
+export interface Env extends RadiusEnv {
+  /** Radius Platform project that charges on Radius Testnet (test mode). */
+  RADIUS_PROJECT_ID_TESTNET?: string;
+  /** Radius Platform project that charges on Radius Mainnet (production mode). */
+  RADIUS_PROJECT_ID_MAINNET?: string;
   PAYMENT_ADDRESS?: string;
   PAYMENT_ADDRESS_MAINNET?: string;
   PAYMENT_ADDRESS_TESTNET?: string;
-  FACILITATOR_API_KEY?: string;
-  FACILITATOR_API_KEY_MAINNET?: string;
-  FACILITATOR_API_KEY_TESTNET?: string;
   RPC_URL_MAINNET?: string;
   RPC_URL_TESTNET?: string;
   SBC_TOKEN_ADDRESS?: string;
@@ -108,7 +104,6 @@ export function getPublicNetworkConfigs(env: Env): Record<NetworkKey, PublicNetw
         getEnvValue(env, 'RPC_URL_MAINNET') ??
         'https://rpc.radiustech.xyz/cebu04iqsbb2xhuklnlnj68amqfukg8ayl32tuwga9ldsuf2',
       explorerBaseUrl: 'https://network.radiustech.xyz',
-      facilitatorUrl: 'https://facilitator.radiustech.xyz',
       paymentAddress: mainnetPaymentAddress,
       tokenAddress: mainnetTokenAddress,
       tokenName: 'Stable Coin',
@@ -128,7 +123,6 @@ export function getPublicNetworkConfigs(env: Env): Record<NetworkKey, PublicNetw
       network: 'eip155:72344',
       rpcUrl: getEnvValue(env, 'RPC_URL_TESTNET') ?? 'https://rpc.testnet.radiustech.xyz',
       explorerBaseUrl: 'https://testnet.radiustech.xyz',
-      facilitatorUrl: 'https://facilitator.testnet.radiustech.xyz',
       paymentAddress: testnetPaymentAddress,
       tokenAddress: testnetTokenAddress,
       tokenName: 'Stable Coin',
@@ -140,33 +134,5 @@ export function getPublicNetworkConfigs(env: Env): Record<NetworkKey, PublicNetw
       amountPerRequest: '100',
       nativeCurrency: { name: 'RUSD', symbol: 'RUSD', decimals: 18 },
     },
-  };
-}
-
-export function getWorkerNetworkConfigs(env: Env): Record<NetworkKey, WorkerNetworkConfig> {
-  const publicConfigs = getPublicNetworkConfigs(env);
-
-  return {
-    mainnet: {
-      ...publicConfigs.mainnet,
-      facilitatorApiKey: getEnvValue(env, 'FACILITATOR_API_KEY_MAINNET', 'FACILITATOR_API_KEY'),
-    },
-    testnet: {
-      ...publicConfigs.testnet,
-      facilitatorApiKey: getEnvValue(env, 'FACILITATOR_API_KEY_TESTNET', 'FACILITATOR_API_KEY'),
-    },
-  };
-}
-
-export function toX402Config(config: WorkerNetworkConfig): X402Config {
-  return {
-    asset: config.tokenAddress,
-    network: config.network,
-    payTo: config.paymentAddress,
-    facilitatorUrl: config.facilitatorUrl,
-    facilitatorApiKey: config.facilitatorApiKey,
-    amount: config.amountPerRequest,
-    tokenName: config.tokenName,
-    tokenVersion: config.tokenVersion,
   };
 }

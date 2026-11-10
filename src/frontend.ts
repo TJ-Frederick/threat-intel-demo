@@ -1559,13 +1559,13 @@ window.runQuery = async function() {
     const res402 = await fetch(resource);
     if (res402.status !== 402) throw new Error('Expected 402, got ' + res402.status);
     const body402 = await res402.json();
-    const req = body402.paymentRequirements[0];
+    const req = body402.accepts[0]; // the offer the Radius Platform policy compiled
 
     statusEl.innerHTML = '<span class="spinner"></span>Signing payment permits...';
 
     const permitNonce = await swarm.getNonce(connectedAddress);
 
-    const { xPayment } = await signX402Payment({
+    const { paymentSignature } = await signX402Payment({
       signTypedData: (params) => walletClient.signTypedData({ account: connectedAddress, ...params }),
       owner: connectedAddress,
       permitNonce: permitNonce,
@@ -1577,7 +1577,7 @@ window.runQuery = async function() {
     statusEl.innerHTML = '<span class="spinner"></span>Settling payment...';
 
     const res = await fetch(resource, {
-      headers: { 'X-Payment': xPayment }
+      headers: { 'PAYMENT-SIGNATURE': paymentSignature }
     });
     if (!res.ok) {
       const errText = await res.text();
@@ -1593,7 +1593,7 @@ window.runQuery = async function() {
 
     // Curl
     document.getElementById('curlCmd').textContent =
-      'curl -H "X-Payment: ' + xPayment.slice(0, 40) + '..." ' + resource;
+      'curl -H "PAYMENT-SIGNATURE: ' + paymentSignature.slice(0, 40) + '..." ' + resource;
 
     resultEl.classList.add('visible');
     statusEl.textContent = '';
