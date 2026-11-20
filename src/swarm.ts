@@ -23,8 +23,8 @@
  *   });
  *
  *   // Single paid request (no swarm needed)
- *   const { xPayment } = await signX402Payment({ signTypedData, owner, permitNonce, resource, accepted, config });
- *   const res = await fetch(url, { headers: { 'X-Payment': xPayment } });
+ *   const { paymentSignature } = await signX402Payment({ signTypedData, owner, permitNonce, resource, accepted, config });
+ *   const res = await fetch(url, { headers: { 'PAYMENT-SIGNATURE': paymentSignature } });
  */
 export function getSwarmModuleJs(): string {
   return `
@@ -121,8 +121,12 @@ async function waitForTx(publicClient, txHash) {
 
 export async function signX402Payment({ signTypedData, owner, permitNonce, resource, accepted, config }) {
   const cfg = { ...RADIUS_DEFAULTS, ...config };
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 300);
+  // Price, payee and validity window come from the server's 402 offer (set by the Radius
+  // Platform policy), so they never drift from what the gate will accept.
+  const validFor = accepted && accepted.maxTimeoutSeconds ? accepted.maxTimeoutSeconds : 300;
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + validFor);
   const amount = accepted ? accepted.amount : cfg.amountPerRequest;
+  const payTo = accepted ? accepted.payTo : cfg.paymentAddress;
 
   const permitDomain = {
     name: cfg.tokenName, version: cfg.tokenVersion,
@@ -184,7 +188,7 @@ export async function signX402Payment({ signTypedData, owner, permitNonce, resou
       spender: cfg.x402Permit2Proxy,
       nonce: p2Nonce,
       deadline: deadline,
-      witness: { to: cfg.paymentAddress, validAfter: BigInt(0) },
+      witness: { to: payTo, validAfter: BigInt(0) },
     },
   });
 
@@ -217,7 +221,7 @@ export async function signX402Payment({ signTypedData, owner, permitNonce, resou
         spender: cfg.x402Permit2Proxy,
         nonce: p2Nonce.toString(),
         deadline: deadline.toString(),
-        witness: { to: cfg.paymentAddress, validAfter: '0' },
+        witness: { to: payTo, validAfter: '0' },
       },
     },
     extensions: {
@@ -231,7 +235,9 @@ export async function signX402Payment({ signTypedData, owner, permitNonce, resou
     },
   };
 
-  return { payload, xPayment: btoa(JSON.stringify(payload)) };
+  const paymentSignature = btoa(JSON.stringify(payload));
+  // x402 v2 sends this in the PAYMENT-SIGNATURE header. (xPayment kept as an alias.)
+  return { payload, paymentSignature, xPayment: paymentSignature };
 }
 
 // ── createSwarm ──
@@ -282,10 +288,15 @@ export function createSwarm(userConfig) {
 
     const agentCount = Math.min(100, Math.max(1, numAgents || 10));
     const perAgent = Math.max(1, requestsPerAgent || 2);
-    const amount = BigInt(cfg.amountPerRequest);
-    const amountPerAgent = BigInt(perAgent) * amount;
 
     try {
+      // 0. Ask the server what it charges (one unpaid request answers 402 with the offer).
+      cb.onStatus?.('Fetching payment terms...');
+      const firstRequest = generateRequests(0, 1)[0];
+      const accepted = await probeFor402(firstRequest.url);
+      const amount = BigInt(accepted.amount);
+      const amountPerAgent = BigInt(perAgent) * amount;
+
       // 1. Generate agent wallets
       cb.onStatus?.('Generating ' + agentCount + ' agent wallets...');
       const agents = [];
@@ -362,17 +373,17 @@ export function createSwarm(userConfig) {
                 try { currentPermitNonce = await getNonce(account.address); } catch(e) {}
               }
 
-              const { xPayment } = await signX402Payment({
+              const { paymentSignature } = await signX402Payment({
                 signTypedData: (params) => account.signTypedData(params),
                 owner: account.address,
                 permitNonce: currentPermitNonce,
                 resource: req,
-                accepted: null,
+                accepted: accepted,
                 config: cfg,
               });
 
               const t0 = Date.now();
-              const res = await fetch(req.url, { headers: { 'X-Payment': xPayment } });
+              const res = await fetch(req.url, { headers: { 'PAYMENT-SIGNATURE': paymentSignature } });
               const fetchMs = Date.now() - t0;
 
               if (!res.ok) {
