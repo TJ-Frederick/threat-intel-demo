@@ -28,10 +28,9 @@ PAYMENT_ADDRESS = "0xDA60059faBf3e71338c27C505CED519f55d605DD"
 # BATCH_CONTRACT_ADDRESS_TESTNET = "0x969ccd1a4dd08bdb490745b6a10a8a9365d05fd8"
 
 # Policy cache, written by the sync and read on every request.
-# Local dev ignores the id; before deploying: `wrangler kv namespace create RADIUS_POLICY`.
 [[kv_namespaces]]
 binding = "RADIUS_POLICY"
-id = "replace-with-kv-namespace-id"
+id = "49447a0a6a7d4405bc05cb9ba256fa37"
 
 # Exact counters and payment claims (stops one payment buying two requests).
 [[durable_objects.bindings]]
